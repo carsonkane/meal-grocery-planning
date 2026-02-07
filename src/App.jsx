@@ -9,7 +9,7 @@ import {
 } from 'firebase/auth';
 import { 
   Plus, Trash2, ShoppingCart, Calendar, Database, CheckSquare, 
-  LogOut, Wifi, Loader2, UserCircle
+  LogOut, Wifi, Loader2, UserCircle, Minus, ChevronRight
 } from 'lucide-react';
 
 // --- FIREBASE CONFIGURATION ---
@@ -118,19 +118,19 @@ function AuthScreen() {
   );
 }
 
-// --- MAIN APP (Only renders when authenticated) ---
+// --- MAIN APP ---
 function AuthenticatedApp({ user }) {
   const [activeTab, setActiveTab] = useState('planner');
   const [syncStatus, setSyncStatus] = useState('syncing'); 
 
-  // Local state mirrors
+  // Data State
   const [recipes, setRecipes] = useState([]);
   const [schedule, setSchedule] = useState({});
-  const [inventory, setInventory] = useState(new Set());
+  // Inventory is now a map: { "Oats": 5, "Milk": 1 }
+  const [inventory, setInventory] = useState({});
 
   // --- FIRESTORE SYNC ENGINE ---
   useEffect(() => {
-    // Syncs specifically to the logged-in User ID
     const docRef = doc(db, 'users', user.uid, 'planner', 'data');
 
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
@@ -138,14 +138,20 @@ function AuthenticatedApp({ user }) {
         const data = docSnap.data();
         setRecipes(data.recipes || []);
         setSchedule(data.schedule || {});
-        setInventory(new Set(data.inventory || []));
+        
+        // MIGRATION LOGIC: Convert old array inventory to object if needed
+        let loadedInv = data.inventory || {};
+        if (Array.isArray(loadedInv)) {
+          loadedInv = loadedInv.reduce((acc, item) => ({ ...acc, [item]: 1 }), {});
+        }
+        setInventory(loadedInv);
+        
         setSyncStatus('synced');
       } else {
-        // First time user: Create default doc
         setDoc(docRef, {
           recipes: INITIAL_RECIPES,
           schedule: {},
-          inventory: []
+          inventory: {}
         });
       }
     }, (error) => {
@@ -156,7 +162,7 @@ function AuthenticatedApp({ user }) {
     return () => unsubscribe();
   }, [user.uid]);
 
-  // --- WRITERS (Push to Cloud) ---
+  // --- WRITERS ---
   const pushUpdate = async (field, newData) => {
     setSyncStatus('syncing');
     const docRef = doc(db, 'users', user.uid, 'planner', 'data');
@@ -169,35 +175,62 @@ function AuthenticatedApp({ user }) {
     }
   };
 
-  // --- AGGREGATION LOGIC ---
+  // --- AGGREGATION LOGIC (Smart Shopping List) ---
   const { totalRequirements, toBuyList } = useMemo(() => {
     const totals = {};
+    
+    // 1. Aggregate Needs
     Object.values(schedule).forEach(recipeId => {
       if (!recipeId) return;
       const recipe = recipes.find(r => r.id === recipeId);
       if (!recipe) return;
+      
       recipe.ingredients.forEach(ing => {
         const key = `${ing.name.toLowerCase()}-${ing.unit.toLowerCase()}`;
         if (!totals[key]) {
-          totals[key] = { ...ing, qty: 0, rawName: ing.name };
+          totals[key] = { 
+            ...ing, 
+            qty: 0, 
+            rawName: ing.name,
+            usedIn: new Set() // Track usage
+          };
         }
         totals[key].qty += parseFloat(ing.qty);
+        totals[key].usedIn.add(recipe.name);
       });
     });
-    const totalReqs = Object.values(totals).sort((a, b) => a.name.localeCompare(b.name));
-    return { 
-      totalRequirements: totalReqs, 
-      toBuyList: totalReqs.filter(item => !inventory.has(item.rawName)) 
-    };
+
+    const totalReqs = Object.values(totals)
+      .map(item => ({ ...item, usedIn: Array.from(item.usedIn) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    // 2. Calculate "To Buy" (Need - Have)
+    // We treat inventory names as case-insensitive matches
+    const buyList = totalReqs.map(req => {
+      const stockQty = inventory[req.rawName] || 0;
+      const needQty = req.qty;
+      const buyQty = Math.max(0, needQty - stockQty);
+      return { ...req, buyQty, stockQty };
+    }).filter(item => item.buyQty > 0);
+
+    return { totalRequirements: totalReqs, toBuyList: buyList };
   }, [schedule, recipes, inventory]);
 
   // --- HANDLERS ---
-  const handleInventory = (item) => {
-    const newInv = new Set(inventory);
-    if (newInv.has(item)) newInv.delete(item);
-    else newInv.add(item);
-    setInventory(newInv); 
-    pushUpdate('inventory', Array.from(newInv));
+  const handleInventory = (item, delta) => {
+    const currentQty = inventory[item] || 0;
+    // If input is direct number (not delta), use it, otherwise add delta
+    const newQty = typeof delta === 'number' ? Math.max(0, currentQty + delta) : 0;
+    
+    const newInv = { ...inventory };
+    if (newQty > 0) {
+      newInv[item] = newQty;
+    } else {
+      delete newInv[item];
+    }
+    
+    setInventory(newInv);
+    pushUpdate('inventory', newInv);
   };
 
   const handleSchedule = (day, type, rId) => {
@@ -220,7 +253,6 @@ function AuthenticatedApp({ user }) {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-20 md:pb-0">
-      {/* Header */}
       <header className="bg-slate-900 text-white p-4 shadow-lg sticky top-0 z-50">
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
           <div className="flex items-center gap-2">
@@ -268,14 +300,14 @@ function AuthenticatedApp({ user }) {
       <main className="max-w-6xl mx-auto p-4 md:p-6">
         {activeTab === 'recipes' && <RecipeManager recipes={recipes} onAdd={handleAddRecipe} onDelete={handleDeleteRecipe} />}
         {activeTab === 'planner' && <WeeklyPlanner days={DAYS} types={MEAL_TYPES} recipes={recipes} schedule={schedule} onUpdate={handleSchedule} />}
-        {activeTab === 'inventory' && <InventoryManager allIngredients={recipes} inventory={inventory} onToggle={handleInventory} />}
-        {activeTab === 'shopping' && <ShoppingListView total={totalRequirements} buyList={toBuyList} inventory={inventory} />}
+        {activeTab === 'inventory' && <InventoryManager allIngredients={recipes} inventory={inventory} onUpdate={handleInventory} />}
+        {activeTab === 'shopping' && <ShoppingListView total={totalRequirements} buyList={toBuyList} />}
       </main>
     </div>
   );
 }
 
-// --- Sub-Components ---
+// --- SUB-COMPONENTS ---
 
 function RecipeManager({ recipes, onAdd, onDelete }) {
   const [isAdding, setIsAdding] = useState(false);
@@ -380,15 +412,27 @@ function WeeklyPlanner({ days, types, recipes, schedule, onUpdate }) {
   );
 }
 
-function InventoryManager({ allIngredients, inventory, onToggle }) {
+function InventoryManager({ allIngredients, inventory, onUpdate }) {
   const [view, setView] = useState('all');
+  
+  // Calculate unique ingredients from CURRENT recipes
   const uniqueIngredients = useMemo(() => {
     const set = new Set();
     allIngredients.forEach(r => r.ingredients.forEach(i => set.add(i.name)));
     return Array.from(set).sort();
   }, [allIngredients]);
   
-  const displayed = view === 'stock' ? uniqueIngredients.filter(i => inventory.has(i)) : uniqueIngredients;
+  // Determine displayed list
+  const displayed = useMemo(() => {
+    if (view === 'stock') {
+      // Bug Fix: Only show items that are BOTH in stock AND in the active recipes list
+      return uniqueIngredients.filter(i => (inventory[i] || 0) > 0);
+    }
+    return uniqueIngredients;
+  }, [view, uniqueIngredients, inventory]);
+
+  // Bug Fix: Count only relevant items for the header
+  const inStockCount = uniqueIngredients.filter(i => (inventory[i] || 0) > 0).length;
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -396,27 +440,49 @@ function InventoryManager({ allIngredients, inventory, onToggle }) {
         <h2 className="text-2xl font-bold text-slate-800">Pantry Inventory</h2>
         <div className="flex bg-slate-200 p-1 rounded-lg">
           <button onClick={() => setView('all')} className={`px-4 py-1.5 rounded-md text-sm ${view === 'all' ? 'bg-white shadow' : ''}`}>All</button>
-          <button onClick={() => setView('stock')} className={`px-4 py-1.5 rounded-md text-sm ${view === 'stock' ? 'bg-white shadow' : ''}`}>Stock ({inventory.size})</button>
+          <button onClick={() => setView('stock')} className={`px-4 py-1.5 rounded-md text-sm ${view === 'stock' ? 'bg-white shadow' : ''}`}>Stock ({inStockCount})</button>
         </div>
       </div>
-      <div className="bg-white rounded-xl shadow-sm border p-6 grid grid-cols-1 sm:grid-cols-3 gap-3">
-        {displayed.map(item => (
-          <label key={item} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer ${inventory.has(item) ? 'bg-emerald-50 border-emerald-200' : ''}`}>
-            <div className={`w-5 h-5 rounded border flex items-center justify-center ${inventory.has(item) ? 'bg-emerald-500 border-emerald-500' : 'bg-white'}`}>
-              {inventory.has(item) && <CheckSquare size={14} className="text-white" />}
-            </div>
-            <input type="checkbox" className="hidden" checked={inventory.has(item)} onChange={() => onToggle(item)} />
-            <span className="text-sm font-medium">{item}</span>
-          </label>
-        ))}
+      <div className="bg-white rounded-xl shadow-sm border p-4">
+        {displayed.length === 0 ? <div className="text-center p-8 text-slate-400">No ingredients found in recipes.</div> : (
+          <div className="divide-y">
+            {displayed.map(item => {
+              const qty = inventory[item] || 0;
+              return (
+                <div key={item} className={`flex items-center justify-between p-3 ${qty > 0 ? 'bg-emerald-50/50' : ''}`}>
+                  <span className={`font-medium ${qty > 0 ? 'text-emerald-900' : 'text-slate-600'}`}>{item}</span>
+                  
+                  <div className="flex items-center gap-2 bg-white border rounded-lg p-1 shadow-sm">
+                    <button 
+                      onClick={() => onUpdate(item, -1)}
+                      className="p-1 hover:bg-slate-100 rounded text-slate-500"
+                    >
+                      <Minus size={16} />
+                    </button>
+                    <div className="w-8 text-center font-mono text-sm font-bold text-slate-700">
+                      {qty}
+                    </div>
+                    <button 
+                      onClick={() => onUpdate(item, 1)}
+                      className="p-1 hover:bg-slate-100 rounded text-emerald-600"
+                    >
+                      <Plus size={16} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function ShoppingListView({ total, buyList, inventory }) {
+function ShoppingListView({ total, buyList }) {
   const [view, setView] = useState('buy');
   const items = view === 'buy' ? buyList : total;
+  
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <div className="flex justify-between items-center">
@@ -428,12 +494,33 @@ function ShoppingListView({ total, buyList, inventory }) {
       </div>
       <div className="bg-white rounded-xl shadow-lg border overflow-hidden divide-y">
         {items.length === 0 ? <div className="p-12 text-center text-slate-400">Nothing here!</div> : items.map((item, idx) => (
-          <div key={idx} className="p-4 flex justify-between items-center">
-            <div className="flex items-center gap-4">
-              <div className={`w-2 h-2 rounded-full ${view === 'buy' ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-              <span className={inventory.has(item.rawName) && view === 'all' ? 'line-through text-slate-400' : ''}>{item.rawName}</span>
+          <div key={idx} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${view === 'buy' ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+              <div>
+                <div className="font-medium text-slate-800">{item.rawName}</div>
+                {/* Feature: Show which recipes use this ingredient */}
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {item.usedIn.map(r => (
+                    <span key={r} className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
+                      {r}
+                    </span>
+                  ))}
+                </div>
+              </div>
             </div>
-            <div className="font-mono bg-slate-100 px-3 py-1 rounded text-sm">{item.qty} {item.unit}</div>
+            
+            <div className="flex items-center gap-4 self-end sm:self-auto">
+               {/* Show Stock info if viewing Buy List */}
+               {view === 'buy' && item.stockQty > 0 && (
+                 <div className="text-xs text-emerald-600 font-medium bg-emerald-50 px-2 py-1 rounded">
+                   Have: {item.stockQty}
+                 </div>
+               )}
+               <div className="font-mono bg-slate-100 px-3 py-1 rounded text-sm min-w-[80px] text-center">
+                 {view === 'buy' ? item.buyQty : item.qty} {item.unit}
+               </div>
+            </div>
           </div>
         ))}
       </div>
