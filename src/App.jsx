@@ -9,7 +9,7 @@ import {
 } from 'firebase/auth';
 import { 
   Plus, Trash2, ShoppingCart, Calendar, Database, CheckSquare, 
-  LogOut, Wifi, Loader2, UserCircle, Minus, ChevronRight
+  LogOut, Wifi, Loader2, UserCircle, Minus
 } from 'lucide-react';
 
 // --- FIREBASE CONFIGURATION ---
@@ -415,23 +415,26 @@ function WeeklyPlanner({ days, types, recipes, schedule, onUpdate }) {
 function InventoryManager({ allIngredients, inventory, onUpdate }) {
   const [view, setView] = useState('all');
   
-  // Calculate unique ingredients from CURRENT recipes
-  const uniqueIngredients = useMemo(() => {
-    const set = new Set();
-    allIngredients.forEach(r => r.ingredients.forEach(i => set.add(i.name)));
-    return Array.from(set).sort();
+  // Create a Map of Ingredient Name -> Unit
+  const ingredientMeta = useMemo(() => {
+    const map = {};
+    allIngredients.forEach(r => r.ingredients.forEach(i => {
+      // Store unit for this ingredient (first one found wins for consistency)
+      if (!map[i.name]) map[i.name] = i.unit;
+    }));
+    return map;
   }, [allIngredients]);
+  
+  const uniqueIngredients = useMemo(() => Object.keys(ingredientMeta).sort(), [ingredientMeta]);
   
   // Determine displayed list
   const displayed = useMemo(() => {
     if (view === 'stock') {
-      // Bug Fix: Only show items that are BOTH in stock AND in the active recipes list
       return uniqueIngredients.filter(i => (inventory[i] || 0) > 0);
     }
     return uniqueIngredients;
   }, [view, uniqueIngredients, inventory]);
 
-  // Bug Fix: Count only relevant items for the header
   const inStockCount = uniqueIngredients.filter(i => (inventory[i] || 0) > 0).length;
 
   return (
@@ -448,6 +451,7 @@ function InventoryManager({ allIngredients, inventory, onUpdate }) {
           <div className="divide-y">
             {displayed.map(item => {
               const qty = inventory[item] || 0;
+              const unit = ingredientMeta[item] || ''; // Retrieve unit
               return (
                 <div key={item} className={`flex items-center justify-between p-3 ${qty > 0 ? 'bg-emerald-50/50' : ''}`}>
                   <span className={`font-medium ${qty > 0 ? 'text-emerald-900' : 'text-slate-600'}`}>{item}</span>
@@ -459,8 +463,9 @@ function InventoryManager({ allIngredients, inventory, onUpdate }) {
                     >
                       <Minus size={16} />
                     </button>
-                    <div className="w-8 text-center font-mono text-sm font-bold text-slate-700">
-                      {qty}
+                    {/* Show Qty + Unit */}
+                    <div className="min-w-[4rem] px-2 text-center font-mono text-sm font-bold text-slate-700 whitespace-nowrap">
+                      {qty} <span className="text-xs font-normal text-slate-400">{unit}</span>
                     </div>
                     <button 
                       onClick={() => onUpdate(item, 1)}

@@ -1,0 +1,4 @@
+Add quantity in pantry inventory
+Shopping list shows what ingredient is used for which recipe
+
+Bug: when you delete a recipe and the ingredients delete, the stock still has stock (1) so there is a hidden item.
