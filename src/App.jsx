@@ -514,7 +514,7 @@ function ShoppingListView({ total, buyList }) {
                {/* Show Stock info if viewing Buy List */}
                {view === 'buy' && item.stockQty > 0 && (
                  <div className="text-xs text-emerald-600 font-medium bg-emerald-50 px-2 py-1 rounded">
-                   Have: {item.stockQty}
+                   Have: {item.stockQty} {item.unit}
                  </div>
                )}
                <div className="font-mono bg-slate-100 px-3 py-1 rounded text-sm min-w-[80px] text-center">
