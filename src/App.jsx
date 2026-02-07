@@ -9,7 +9,8 @@ import {
 } from 'firebase/auth';
 import { 
   Plus, Trash2, ShoppingCart, Calendar, Database, CheckSquare, 
-  LogOut, Wifi, Loader2, UserCircle, Minus, X, Tag, Filter, Pencil
+  LogOut, Wifi, Loader2, UserCircle, Minus, X, Tag, Filter, Pencil, 
+  AlertTriangle, RefreshCw
 } from 'lucide-react';
 
 // --- FIREBASE CONFIGURATION ---
@@ -197,6 +198,7 @@ function AuthenticatedApp({ user }) {
       if (!recipe) return;
       
       recipe.ingredients.forEach(ing => {
+        // NOTE: We use key based on Name + Unit to separate disparate measurements
         const key = `${ing.name.toLowerCase()}-${ing.unit.toLowerCase()}`;
         if (!totals[key]) {
           totals[key] = { 
@@ -355,7 +357,7 @@ function AuthenticatedApp({ user }) {
         {activeTab === 'recipes' && <RecipeManager recipes={recipes} onAdd={handleAddRecipe} onUpdate={handleUpdateRecipe} onDelete={handleDeleteRecipe} />}
         {activeTab === 'planner' && <WeeklyPlanner days={DAYS} types={MEAL_TYPES} recipes={recipes} schedule={schedule} onUpdate={handleSchedule} />}
         {activeTab === 'inventory' && <InventoryManager allIngredients={recipes} inventory={inventory} customUnits={customUnits} onUpdate={handleInventory} />}
-        {activeTab === 'shopping' && <ShoppingListView total={totalRequirements} buyList={toBuyList} onAddExtra={handleExtraList} />}
+        {activeTab === 'shopping' && <ShoppingListView total={totalRequirements} buyList={toBuyList} inventoryUnits={customUnits} onAddExtra={handleExtraList} onUpdateInventory={handleInventory} />}
       </main>
     </div>
   );
@@ -368,19 +370,16 @@ function RecipeManager({ recipes, onAdd, onUpdate, onDelete }) {
   const [editingId, setEditingId] = useState(null);
   const [selectedTag, setSelectedTag] = useState('All');
 
-  // Derive unique tags from all recipes
   const allTags = useMemo(() => {
     const tags = new Set(recipes.flatMap(r => r.tags || []));
     return ['All', ...Array.from(tags).sort()];
   }, [recipes]);
 
-  // Derive filtered recipes
   const filteredRecipes = useMemo(() => {
     if (selectedTag === 'All') return recipes;
     return recipes.filter(r => (r.tags || []).includes(selectedTag));
   }, [recipes, selectedTag]);
 
-  // Extract all known ingredients for autocomplete
   const knownIngredients = useMemo(() => {
     const set = new Set();
     recipes.forEach(r => r.ingredients.forEach(i => set.add(i.name)));
@@ -487,7 +486,6 @@ function RecipeForm({ onSave, onCancel, knownIngredients, existingTags, initialD
   const [tags, setTags] = useState(initialData.tags || []);
   const [tagInput, setTagInput] = useState('');
   
-  // Unique ID for this form instance's datalist
   const datalistId = useId();
 
   const handleIngChange = (idx, field, val) => {
@@ -523,7 +521,6 @@ function RecipeForm({ onSave, onCancel, knownIngredients, existingTags, initialD
     <div className="col-span-full bg-slate-50 border-2 border-dashed border-emerald-200 rounded-xl p-6 mb-8">
       <h3 className="font-bold text-lg mb-4 text-emerald-800">{initialData.id ? 'Edit Recipe' : 'New Recipe Entry'}</h3>
       <div className="space-y-4">
-        {/* Name & Tags */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-xs font-semibold text-emerald-800 mb-1">NAME</label>
@@ -548,7 +545,6 @@ function RecipeForm({ onSave, onCancel, knownIngredients, existingTags, initialD
           </div>
         </div>
 
-        {/* Tag List */}
         {tags.length > 0 && (
           <div className="flex flex-wrap gap-2">
             {tags.map(tag => (
@@ -567,7 +563,7 @@ function RecipeForm({ onSave, onCancel, knownIngredients, existingTags, initialD
                 placeholder="Item" 
                 className="flex-1 p-2 border rounded-md" 
                 value={ing.name} 
-                list="all-ingredients" // Uses Global Datalist
+                list="all-ingredients"
                 onChange={e => handleIngChange(idx, 'name', e.target.value)} 
               />
               <input placeholder="Qty" type="number" className="w-20 p-2 border rounded-md" value={ing.qty} onChange={e => handleIngChange(idx, 'qty', e.target.value)} />
@@ -657,7 +653,6 @@ function InventoryManager({ allIngredients, inventory, customUnits, onUpdate }) 
   const [newItemQty, setNewItemQty] = useState(1);
   const [newItemUnit, setNewItemUnit] = useState('');
   
-  // Create a Map of Ingredient Name -> Unit
   const ingredientMeta = useMemo(() => {
     const map = { ...customUnits };
     allIngredients.forEach(r => r.ingredients.forEach(i => {
@@ -666,7 +661,6 @@ function InventoryManager({ allIngredients, inventory, customUnits, onUpdate }) 
     return map;
   }, [allIngredients, customUnits]);
   
-  // Displayed List - Use Recipe Items + Current Inventory Items
   const displayedList = useMemo(() => {
     const fromRecipes = Object.keys(ingredientMeta);
     const fromInventory = Object.keys(inventory);
@@ -691,7 +685,6 @@ function InventoryManager({ allIngredients, inventory, customUnits, onUpdate }) 
 
   return (
     <div className="max-w-4xl mx-auto">
-      {/* Header & Controls */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
         <div>
           <h2 className="text-2xl font-bold text-slate-800">Pantry Inventory</h2>
@@ -712,7 +705,6 @@ function InventoryManager({ allIngredients, inventory, customUnits, onUpdate }) 
         </div>
       </div>
 
-      {/* Add Item Form */}
       {isAdding && (
         <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 mb-6 flex flex-col sm:flex-row gap-3 items-end">
           <div className="flex-1 w-full">
@@ -720,7 +712,7 @@ function InventoryManager({ allIngredients, inventory, customUnits, onUpdate }) 
             <input 
               className="w-full p-2 border border-emerald-200 rounded-md text-sm" 
               placeholder="e.g. Rice" 
-              list="all-ingredients" // Uses Global Datalist
+              list="all-ingredients"
               value={newItemName}
               onChange={e => {
                 setNewItemName(e.target.value);
@@ -758,7 +750,6 @@ function InventoryManager({ allIngredients, inventory, customUnits, onUpdate }) 
         </div>
       )}
 
-      {/* Inventory List */}
       <div className="bg-white rounded-xl shadow-sm border p-4">
         {displayedList.length === 0 ? <div className="text-center p-8 text-slate-400">No ingredients found.</div> : (
           <div className="divide-y">
@@ -802,12 +793,15 @@ function InventoryManager({ allIngredients, inventory, customUnits, onUpdate }) 
   );
 }
 
-function ShoppingListView({ total, buyList, onAddExtra }) {
+function ShoppingListView({ total, buyList, inventoryUnits, onAddExtra, onUpdateInventory }) {
   const [view, setView] = useState('buy');
   const [isAdding, setIsAdding] = useState(false);
   const [extraName, setExtraName] = useState('');
   const [extraQty, setExtraQty] = useState('');
   const [extraUnit, setExtraUnit] = useState('');
+  
+  // Resolution State: { "Item Name": { newQty: 5, newUnit: "ml" } }
+  const [resolving, setResolving] = useState({});
 
   const items = view === 'buy' ? buyList : total;
 
@@ -815,6 +809,24 @@ function ShoppingListView({ total, buyList, onAddExtra }) {
     if (!extraName) return;
     onAddExtra('add', { name: extraName, qty: extraQty || 1, unit: extraUnit });
     setExtraName(''); setExtraQty(''); setExtraUnit(''); setIsAdding(false);
+  };
+
+  const startResolve = (item, currentStock, desiredUnit) => {
+    setResolving({
+      ...resolving,
+      [item]: { qty: currentStock, unit: desiredUnit }
+    });
+  };
+
+  const confirmResolve = (itemName) => {
+    const { qty, unit } = resolving[itemName];
+    // Update inventory to the new Quantity AND the new Unit (Recipe Unit)
+    onUpdateInventory(itemName, qty, true, unit);
+    
+    // Clear resolution state
+    const newResolving = { ...resolving };
+    delete newResolving[itemName];
+    setResolving(newResolving);
   };
   
   return (
@@ -840,7 +852,7 @@ function ShoppingListView({ total, buyList, onAddExtra }) {
               className="w-full p-2 border border-emerald-200 rounded-md text-sm" 
               placeholder="e.g. Paper Towels" 
               value={extraName} 
-              list="all-ingredients" // Uses Global Datalist
+              list="all-ingredients"
               onChange={e => setExtraName(e.target.value)} 
             />
           </div>
@@ -857,42 +869,78 @@ function ShoppingListView({ total, buyList, onAddExtra }) {
       )}
 
       <div className="bg-white rounded-xl shadow-lg border overflow-hidden divide-y">
-        {items.length === 0 ? <div className="p-12 text-center text-slate-400">Nothing here!</div> : items.map((item, idx) => (
-          <div key={idx} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-start gap-3">
-              <div className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${view === 'buy' ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-              <div>
-                <div className="font-medium text-slate-800 flex items-center gap-2">
-                  {item.rawName}
-                  {item.isManual && <Tag size={12} className="text-emerald-500" />}
-                </div>
-                <div className="flex flex-wrap gap-1 mt-1">
-                  {item.usedIn.map(r => (
-                    <span key={r} className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
-                      {r}
-                    </span>
-                  ))}
+        {items.length === 0 ? <div className="p-12 text-center text-slate-400">Nothing here!</div> : items.map((item, idx) => {
+          // Detect Mismatch: Inventory Unit exists AND is different from Recipe Unit
+          const stockUnit = inventoryUnits[item.rawName];
+          const hasMismatch = stockUnit && stockUnit !== item.unit && item.stockQty > 0;
+          const isResolving = resolving[item.rawName];
+
+          return (
+            <div key={idx} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white">
+              <div className="flex items-start gap-3">
+                <div className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${view === 'buy' ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                <div>
+                  <div className="font-medium text-slate-800 flex items-center gap-2">
+                    {item.rawName}
+                    {item.isManual && <Tag size={12} className="text-emerald-500" />}
+                  </div>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {item.usedIn.map(r => (
+                      <span key={r} className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
+                        {r}
+                      </span>
+                    ))}
+                  </div>
+                  
+                  {/* UNIT MISMATCH WARNING */}
+                  {hasMismatch && !isResolving && (
+                    <div className="mt-2 flex items-center gap-2 text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded border border-amber-100">
+                      <AlertTriangle size={12} />
+                      <span>Mismatch: Need <strong>{item.unit}</strong>, Have <strong>{stockUnit}</strong></span>
+                      <button 
+                        onClick={() => startResolve(item.rawName, item.stockQty, item.unit)}
+                        className="ml-2 bg-white border border-amber-300 px-2 py-0.5 rounded hover:bg-amber-100 font-bold"
+                      >
+                        Fix
+                      </button>
+                    </div>
+                  )}
+
+                  {/* RESOLUTION UI */}
+                  {isResolving && (
+                    <div className="mt-2 p-2 bg-slate-50 border rounded-md flex items-center gap-2">
+                      <span className="text-xs text-slate-500">Convert {stockUnit} to {item.unit}:</span>
+                      <input 
+                        type="number" 
+                        className="w-16 p-1 border rounded text-xs" 
+                        value={isResolving.qty}
+                        onChange={(e) => setResolving({ ...resolving, [item.rawName]: { ...isResolving, qty: parseFloat(e.target.value) || 0 } })}
+                      />
+                      <button onClick={() => confirmResolve(item.rawName)} className="bg-emerald-600 text-white px-2 py-1 rounded text-xs">Update</button>
+                      <button onClick={() => { const newRes = {...resolving}; delete newRes[item.rawName]; setResolving(newRes); }} className="text-slate-400 text-xs hover:text-slate-600">Cancel</button>
+                    </div>
+                  )}
                 </div>
               </div>
-            </div>
-            
-            <div className="flex items-center gap-4 self-end sm:self-auto">
-               {view === 'buy' && item.stockQty > 0 && (
-                 <div className="text-xs text-emerald-600 font-medium bg-emerald-50 px-2 py-1 rounded">
-                   Have: {item.stockQty} {item.unit}
+              
+              <div className="flex items-center gap-4 self-end sm:self-auto">
+                 {view === 'buy' && item.stockQty > 0 && !hasMismatch && (
+                   <div className="text-xs text-emerald-600 font-medium bg-emerald-50 px-2 py-1 rounded">
+                     Have: {item.stockQty} {item.unit}
+                   </div>
+                 )}
+                 <div className="font-mono bg-slate-100 px-3 py-1 rounded text-sm min-w-[80px] text-center">
+                   {view === 'buy' ? item.buyQty : item.qty} {item.unit}
                  </div>
-               )}
-               <div className="font-mono bg-slate-100 px-3 py-1 rounded text-sm min-w-[80px] text-center">
-                 {view === 'buy' ? item.buyQty : item.qty} {item.unit}
-               </div>
-               {item.isManual && (
-                 <button onClick={() => onAddExtra('remove', item)} className="text-slate-400 hover:text-red-500 transition">
-                   <Trash2 size={16} />
-                 </button>
-               )}
+                 {item.isManual && (
+                   <button onClick={() => onAddExtra('remove', item)} className="text-slate-400 hover:text-red-500 transition">
+                     <Trash2 size={16} />
+                   </button>
+                 )}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
