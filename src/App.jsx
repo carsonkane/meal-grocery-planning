@@ -9,7 +9,7 @@ import {
 } from 'firebase/auth';
 import { 
   Plus, Trash2, ShoppingCart, Calendar, Database, CheckSquare, 
-  LogOut, Wifi, Loader2, UserCircle, Minus, X, ChevronRight
+  LogOut, Wifi, Loader2, UserCircle, Minus, X, Tag
 } from 'lucide-react';
 
 // --- FIREBASE CONFIGURATION ---
@@ -48,7 +48,6 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Auth Listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
@@ -62,7 +61,7 @@ export default function App() {
   return user ? <AuthenticatedApp user={user} /> : <AuthScreen />;
 }
 
-// --- AUTH COMPONENT (EMAIL/PASSWORD) ---
+// --- AUTH COMPONENT ---
 function AuthScreen() {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
@@ -126,8 +125,9 @@ function AuthenticatedApp({ user }) {
   // Data State
   const [recipes, setRecipes] = useState([]);
   const [schedule, setSchedule] = useState({});
-  // Inventory is now a map: { "Oats": 5, "Milk": 1 }
   const [inventory, setInventory] = useState({});
+  const [customUnits, setCustomUnits] = useState({}); // New: Store units for manual items
+  const [extraList, setExtraList] = useState([]); // New: Manual shopping list items
 
   // --- FIRESTORE SYNC ENGINE ---
   useEffect(() => {
@@ -138,8 +138,9 @@ function AuthenticatedApp({ user }) {
         const data = docSnap.data();
         setRecipes(data.recipes || []);
         setSchedule(data.schedule || {});
+        setCustomUnits(data.customUnits || {});
+        setExtraList(data.extraList || []);
         
-        // MIGRATION LOGIC: Convert old array inventory to object if needed
         let loadedInv = data.inventory || {};
         if (Array.isArray(loadedInv)) {
           loadedInv = loadedInv.reduce((acc, item) => ({ ...acc, [item]: 1 }), {});
@@ -151,7 +152,9 @@ function AuthenticatedApp({ user }) {
         setDoc(docRef, {
           recipes: INITIAL_RECIPES,
           schedule: {},
-          inventory: {}
+          inventory: {},
+          customUnits: {},
+          extraList: []
         });
       }
     }, (error) => {
@@ -179,7 +182,7 @@ function AuthenticatedApp({ user }) {
   const { totalRequirements, toBuyList } = useMemo(() => {
     const totals = {};
     
-    // 1. Aggregate Needs
+    // 1. Aggregate Recipe Needs
     Object.values(schedule).forEach(recipeId => {
       if (!recipeId) return;
       const recipe = recipes.find(r => r.id === recipeId);
@@ -192,7 +195,8 @@ function AuthenticatedApp({ user }) {
             ...ing, 
             qty: 0, 
             rawName: ing.name,
-            usedIn: new Set() // Track usage
+            usedIn: new Set(),
+            isManual: false
           };
         }
         totals[key].qty += parseFloat(ing.qty);
@@ -201,30 +205,54 @@ function AuthenticatedApp({ user }) {
     });
 
     const totalReqs = Object.values(totals)
-      .map(item => ({ ...item, usedIn: Array.from(item.usedIn) }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .map(item => ({ ...item, usedIn: Array.from(item.usedIn) }));
 
     // 2. Calculate "To Buy" (Need - Have)
-    // We treat inventory names as case-insensitive matches
-    const buyList = totalReqs.map(req => {
+    const derivedBuyList = totalReqs.map(req => {
       const stockQty = inventory[req.rawName] || 0;
       const needQty = req.qty;
       const buyQty = Math.max(0, needQty - stockQty);
       return { ...req, buyQty, stockQty };
     }).filter(item => item.buyQty > 0);
 
-    return { totalRequirements: totalReqs, toBuyList: buyList };
-  }, [schedule, recipes, inventory]);
+    // 3. Merge with Manual Extra List
+    // We treat extras as separate line items to avoid complex unit merging logic
+    const finalBuyList = [
+      ...derivedBuyList,
+      ...extraList.map(item => ({ 
+        ...item, 
+        rawName: item.name, 
+        buyQty: item.qty, 
+        stockQty: 0, 
+        usedIn: ['Manual Add'],
+        isManual: true 
+      }))
+    ].sort((a, b) => a.rawName.localeCompare(b.rawName));
+
+    // For Total view, we also show extras
+    const finalTotalList = [
+      ...totalReqs,
+      ...extraList.map(item => ({ 
+        ...item, 
+        rawName: item.name, 
+        stockQty: 0, 
+        usedIn: ['Manual Add'],
+        isManual: true 
+      }))
+    ].sort((a, b) => a.rawName.localeCompare(b.rawName));
+
+    return { totalRequirements: finalTotalList, toBuyList: finalBuyList };
+  }, [schedule, recipes, inventory, extraList]);
 
   // --- HANDLERS ---
-  const handleInventory = (item, value, isAbsolute = false) => {
+  const handleInventory = (item, value, isAbsolute = false, unit = null) => {
     const currentQty = inventory[item] || 0;
     
     let newQty;
     if (isAbsolute) {
-        newQty = Math.max(0, value); // Direct set (typing)
+        newQty = Math.max(0, value);
     } else {
-        newQty = Math.max(0, currentQty + value); // Delta (+/- buttons)
+        newQty = Math.max(0, currentQty + value);
     }
     
     const newInv = { ...inventory };
@@ -236,6 +264,24 @@ function AuthenticatedApp({ user }) {
     
     setInventory(newInv);
     pushUpdate('inventory', newInv);
+
+    // If a unit was provided (Manual Add), update customUnits meta
+    if (unit) {
+      const newCustomUnits = { ...customUnits, [item]: unit };
+      setCustomUnits(newCustomUnits);
+      pushUpdate('customUnits', newCustomUnits);
+    }
+  };
+
+  const handleExtraList = (action, item) => {
+    let newExtras = [...extraList];
+    if (action === 'add') {
+      newExtras.push({ ...item, id: Date.now() });
+    } else if (action === 'remove') {
+      newExtras = newExtras.filter(i => i.id !== item.id);
+    }
+    setExtraList(newExtras);
+    pushUpdate('extraList', newExtras);
   };
 
   const handleSchedule = (day, type, rId) => {
@@ -305,8 +351,8 @@ function AuthenticatedApp({ user }) {
       <main className="max-w-6xl mx-auto p-4 md:p-6">
         {activeTab === 'recipes' && <RecipeManager recipes={recipes} onAdd={handleAddRecipe} onDelete={handleDeleteRecipe} />}
         {activeTab === 'planner' && <WeeklyPlanner days={DAYS} types={MEAL_TYPES} recipes={recipes} schedule={schedule} onUpdate={handleSchedule} />}
-        {activeTab === 'inventory' && <InventoryManager allIngredients={recipes} inventory={inventory} onUpdate={handleInventory} />}
-        {activeTab === 'shopping' && <ShoppingListView total={totalRequirements} buyList={toBuyList} />}
+        {activeTab === 'inventory' && <InventoryManager allIngredients={recipes} inventory={inventory} customUnits={customUnits} onUpdate={handleInventory} />}
+        {activeTab === 'shopping' && <ShoppingListView total={totalRequirements} buyList={toBuyList} onAddExtra={handleExtraList} />}
       </main>
     </div>
   );
@@ -373,7 +419,6 @@ function RecipeForm({ onSave, knownIngredients }) {
       <div className="space-y-4">
         <input value={name} onChange={e => setName(e.target.value)} className="w-full p-2 border rounded-md" placeholder="Recipe Name" />
         
-        {/* Datalist for Autocomplete */}
         <datalist id="known-ingredients">
           {knownIngredients.map(ing => <option key={ing} value={ing} />)}
         </datalist>
@@ -384,7 +429,7 @@ function RecipeForm({ onSave, knownIngredients }) {
               placeholder="Item (e.g. Eggs)" 
               className="flex-1 p-2 border rounded-md" 
               value={ing.name} 
-              list="known-ingredients" // Link input to datalist
+              list="known-ingredients"
               onChange={e => handleIngChange(idx, 'name', e.target.value)} 
             />
             <input placeholder="Qty" type="number" className="w-20 p-2 border rounded-md" value={ing.qty} onChange={e => handleIngChange(idx, 'qty', e.target.value)} />
@@ -417,7 +462,6 @@ function WeeklyPlanner({ days, types, recipes, schedule, onUpdate }) {
           <tbody>
             {weeks.map(weekNum => (
               <React.Fragment key={weekNum}>
-                {/* Visual Separator for Weeks */}
                 <tr className="bg-emerald-50">
                   <td colSpan={types.length + 1} className="p-2 px-4 font-bold text-emerald-800 text-xs uppercase tracking-widest border-y border-emerald-100">
                     Week {weekNum}
@@ -429,7 +473,6 @@ function WeeklyPlanner({ days, types, recipes, schedule, onUpdate }) {
                       {day}
                     </td>
                     {types.map(type => {
-                      // Determine Key: Week 1 uses legacy keys, Week 2 uses new prefix
                       const key = weekNum === 1 ? `${day}-${type}` : `W2-${day}-${type}`;
                       const selectedValue = schedule[key] || '';
                       
@@ -465,21 +508,22 @@ function WeeklyPlanner({ days, types, recipes, schedule, onUpdate }) {
   );
 }
 
-function InventoryManager({ allIngredients, inventory, onUpdate }) {
+function InventoryManager({ allIngredients, inventory, customUnits, onUpdate }) {
   const [view, setView] = useState('all');
   const [isAdding, setIsAdding] = useState(false);
   const [newItemName, setNewItemName] = useState('');
   const [newItemQty, setNewItemQty] = useState(1);
+  const [newItemUnit, setNewItemUnit] = useState(''); // New: Unit state
   
   // Create a Map of Ingredient Name -> Unit
+  // Priority: 1. Custom Units (Manual Override), 2. Recipe Units
   const ingredientMeta = useMemo(() => {
-    const map = {};
+    const map = { ...customUnits };
     allIngredients.forEach(r => r.ingredients.forEach(i => {
-      // Store unit for this ingredient
       if (!map[i.name]) map[i.name] = i.unit;
     }));
     return map;
-  }, [allIngredients]);
+  }, [allIngredients, customUnits]);
   
   // Merge Recipe Ingredients + Current Inventory Items for the "Database" list
   const uniqueIngredients = useMemo(() => {
@@ -500,9 +544,11 @@ function InventoryManager({ allIngredients, inventory, onUpdate }) {
 
   const handleManualAdd = () => {
     if (!newItemName) return;
-    onUpdate(newItemName, parseFloat(newItemQty) || 0, true);
+    // Pass the unit so it can be saved to customUnits
+    onUpdate(newItemName, parseFloat(newItemQty) || 0, true, newItemUnit);
     setNewItemName('');
     setNewItemQty(1);
+    setNewItemUnit('');
     setIsAdding(false);
   };
 
@@ -533,19 +579,25 @@ function InventoryManager({ allIngredients, inventory, onUpdate }) {
       {isAdding && (
         <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 mb-6 flex flex-col sm:flex-row gap-3 items-end">
           <div className="flex-1 w-full">
-            <label className="block text-xs font-semibold text-emerald-800 mb-1">ITEM NAME</label>
+            <label className="block text-xs font-semibold text-emerald-800 mb-1">ITEM</label>
             <input 
               className="w-full p-2 border border-emerald-200 rounded-md text-sm" 
               placeholder="e.g. Rice" 
               list="inventory-known-ingredients"
               value={newItemName}
-              onChange={e => setNewItemName(e.target.value)}
+              onChange={e => {
+                setNewItemName(e.target.value);
+                // Auto-fill unit if known
+                if (ingredientMeta[e.target.value]) {
+                  setNewItemUnit(ingredientMeta[e.target.value]);
+                }
+              }}
             />
             <datalist id="inventory-known-ingredients">
               {uniqueIngredients.map(ing => <option key={ing} value={ing} />)}
             </datalist>
           </div>
-          <div className="w-24">
+          <div className="w-20">
             <label className="block text-xs font-semibold text-emerald-800 mb-1">QTY</label>
             <input 
               type="number" 
@@ -553,6 +605,15 @@ function InventoryManager({ allIngredients, inventory, onUpdate }) {
               placeholder="1" 
               value={newItemQty}
               onChange={e => setNewItemQty(e.target.value)}
+            />
+          </div>
+          <div className="w-24">
+            <label className="block text-xs font-semibold text-emerald-800 mb-1">UNIT</label>
+            <input 
+              className="w-full p-2 border border-emerald-200 rounded-md text-sm" 
+              placeholder="kg" 
+              value={newItemUnit}
+              onChange={e => setNewItemUnit(e.target.value)}
             />
           </div>
           <button 
@@ -570,7 +631,7 @@ function InventoryManager({ allIngredients, inventory, onUpdate }) {
           <div className="divide-y">
             {displayed.map(item => {
               const qty = inventory[item] || 0;
-              const unit = ingredientMeta[item] || ''; // Retrieve unit if known
+              const unit = ingredientMeta[item] || ''; 
               return (
                 <div key={item} className={`flex items-center justify-between p-3 ${qty > 0 ? 'bg-emerald-50/50' : ''}`}>
                   <span className={`font-medium ${qty > 0 ? 'text-emerald-900' : 'text-slate-600'}`}>{item}</span>
@@ -582,13 +643,12 @@ function InventoryManager({ allIngredients, inventory, onUpdate }) {
                     >
                       <Minus size={16} />
                     </button>
-                    {/* INPUT FIELD FOR QUANTITY */}
                     <div className="flex items-center">
                       <input 
                         type="number"
                         className="w-16 text-center font-mono text-sm font-bold text-slate-700 outline-none bg-transparent"
                         value={qty}
-                        onChange={(e) => onUpdate(item, parseFloat(e.target.value) || 0, true)} // True = Absolute set
+                        onChange={(e) => onUpdate(item, parseFloat(e.target.value) || 0, true)} 
                       />
                       <span className="text-xs font-normal text-slate-400 pr-2 min-w-[20px]">{unit}</span>
                     </div>
@@ -609,26 +669,64 @@ function InventoryManager({ allIngredients, inventory, onUpdate }) {
   );
 }
 
-function ShoppingListView({ total, buyList }) {
+function ShoppingListView({ total, buyList, onAddExtra }) {
   const [view, setView] = useState('buy');
+  const [isAdding, setIsAdding] = useState(false);
+  const [extraName, setExtraName] = useState('');
+  const [extraQty, setExtraQty] = useState('');
+  const [extraUnit, setExtraUnit] = useState('');
+
   const items = view === 'buy' ? buyList : total;
+
+  const handleAdd = () => {
+    if (!extraName) return;
+    onAddExtra('add', { name: extraName, qty: extraQty || 1, unit: extraUnit });
+    setExtraName(''); setExtraQty(''); setExtraUnit(''); setIsAdding(false);
+  };
   
   return (
     <div className="max-w-4xl mx-auto space-y-6">
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <h2 className="text-2xl font-bold text-slate-800">Shopping List</h2>
-        <div className="flex bg-slate-200 p-1 rounded-lg">
-          <button onClick={() => setView('buy')} className={`px-4 py-1.5 rounded-md text-sm ${view === 'buy' ? 'bg-white shadow' : ''}`}>To Buy ({buyList.length})</button>
-          <button onClick={() => setView('all')} className={`px-4 py-1.5 rounded-md text-sm ${view === 'all' ? 'bg-white shadow' : ''}`}>Total ({total.length})</button>
+        <div className="flex gap-2">
+          <div className="flex bg-slate-200 p-1 rounded-lg">
+            <button onClick={() => setView('buy')} className={`px-4 py-1.5 rounded-md text-sm ${view === 'buy' ? 'bg-white shadow' : ''}`}>To Buy ({buyList.length})</button>
+            <button onClick={() => setView('all')} className={`px-4 py-1.5 rounded-md text-sm ${view === 'all' ? 'bg-white shadow' : ''}`}>Total ({total.length})</button>
+          </div>
+          <button onClick={() => setIsAdding(!isAdding)} className="bg-emerald-600 text-white p-2 rounded-lg hover:bg-emerald-700 shadow-sm" title="Add extra item">
+            {isAdding ? <X size={20} /> : <Plus size={20} />}
+          </button>
         </div>
       </div>
+
+      {isAdding && (
+        <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 flex flex-col sm:flex-row gap-3 items-end">
+          <div className="flex-1 w-full">
+            <label className="block text-xs font-semibold text-emerald-800 mb-1">EXTRA ITEM</label>
+            <input className="w-full p-2 border border-emerald-200 rounded-md text-sm" placeholder="e.g. Paper Towels" value={extraName} onChange={e => setExtraName(e.target.value)} />
+          </div>
+          <div className="w-20">
+            <label className="block text-xs font-semibold text-emerald-800 mb-1">QTY</label>
+            <input type="number" className="w-full p-2 border border-emerald-200 rounded-md text-sm" placeholder="1" value={extraQty} onChange={e => setExtraQty(e.target.value)} />
+          </div>
+          <div className="w-24">
+            <label className="block text-xs font-semibold text-emerald-800 mb-1">UNIT</label>
+            <input className="w-full p-2 border border-emerald-200 rounded-md text-sm" placeholder="roll" value={extraUnit} onChange={e => setExtraUnit(e.target.value)} />
+          </div>
+          <button onClick={handleAdd} className="w-full sm:w-auto bg-emerald-600 text-white px-4 py-2 rounded-md text-sm font-bold hover:bg-emerald-700">Add</button>
+        </div>
+      )}
+
       <div className="bg-white rounded-xl shadow-lg border overflow-hidden divide-y">
         {items.length === 0 ? <div className="p-12 text-center text-slate-400">Nothing here!</div> : items.map((item, idx) => (
           <div key={idx} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-start gap-3">
               <div className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${view === 'buy' ? 'bg-emerald-500' : 'bg-slate-300'}`} />
               <div>
-                <div className="font-medium text-slate-800">{item.rawName}</div>
+                <div className="font-medium text-slate-800 flex items-center gap-2">
+                  {item.rawName}
+                  {item.isManual && <Tag size={12} className="text-emerald-500" />}
+                </div>
                 <div className="flex flex-wrap gap-1 mt-1">
                   {item.usedIn.map(r => (
                     <span key={r} className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
@@ -648,6 +746,11 @@ function ShoppingListView({ total, buyList }) {
                <div className="font-mono bg-slate-100 px-3 py-1 rounded text-sm min-w-[80px] text-center">
                  {view === 'buy' ? item.buyQty : item.qty} {item.unit}
                </div>
+               {item.isManual && (
+                 <button onClick={() => onAddExtra('remove', item)} className="text-slate-400 hover:text-red-500 transition">
+                   <Trash2 size={16} />
+                 </button>
+               )}
             </div>
           </div>
         ))}
