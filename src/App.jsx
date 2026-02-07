@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useId } from 'react';
 import { initializeApp } from 'firebase/app';
 import { 
   getFirestore, doc, setDoc, onSnapshot, updateDoc 
@@ -9,7 +9,7 @@ import {
 } from 'firebase/auth';
 import { 
   Plus, Trash2, ShoppingCart, Calendar, Database, CheckSquare, 
-  LogOut, Wifi, Loader2, UserCircle, Minus, X, Tag, Filter
+  LogOut, Wifi, Loader2, UserCircle, Minus, X, Tag, Filter, Pencil
 } from 'lucide-react';
 
 // --- FIREBASE CONFIGURATION ---
@@ -289,6 +289,12 @@ function AuthenticatedApp({ user }) {
     pushUpdate('recipes', updatedRecipes);
   };
 
+  const handleUpdateRecipe = (updatedRecipe) => {
+    const updatedRecipes = recipes.map(r => r.id === updatedRecipe.id ? updatedRecipe : r);
+    setRecipes(updatedRecipes);
+    pushUpdate('recipes', updatedRecipes);
+  };
+
   const handleDeleteRecipe = (id) => {
     const updatedRecipes = recipes.filter(r => r.id !== id);
     setRecipes(updatedRecipes);
@@ -346,7 +352,7 @@ function AuthenticatedApp({ user }) {
       </header>
 
       <main className="max-w-6xl mx-auto p-4 md:p-6">
-        {activeTab === 'recipes' && <RecipeManager recipes={recipes} onAdd={handleAddRecipe} onDelete={handleDeleteRecipe} />}
+        {activeTab === 'recipes' && <RecipeManager recipes={recipes} onAdd={handleAddRecipe} onUpdate={handleUpdateRecipe} onDelete={handleDeleteRecipe} />}
         {activeTab === 'planner' && <WeeklyPlanner days={DAYS} types={MEAL_TYPES} recipes={recipes} schedule={schedule} onUpdate={handleSchedule} />}
         {activeTab === 'inventory' && <InventoryManager allIngredients={recipes} inventory={inventory} customUnits={customUnits} onUpdate={handleInventory} />}
         {activeTab === 'shopping' && <ShoppingListView total={totalRequirements} buyList={toBuyList} onAddExtra={handleExtraList} />}
@@ -357,8 +363,9 @@ function AuthenticatedApp({ user }) {
 
 // --- SUB-COMPONENTS ---
 
-function RecipeManager({ recipes, onAdd, onDelete }) {
+function RecipeManager({ recipes, onAdd, onUpdate, onDelete }) {
   const [isAdding, setIsAdding] = useState(false);
+  const [editingId, setEditingId] = useState(null);
   const [selectedTag, setSelectedTag] = useState('All');
 
   // Derive unique tags from all recipes
@@ -380,48 +387,68 @@ function RecipeManager({ recipes, onAdd, onDelete }) {
     return Array.from(set).sort();
   }, [recipes]);
 
+  const existingTagsList = allTags.filter(t => t !== 'All');
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <h2 className="text-2xl font-bold text-slate-800">Recipe Database</h2>
-        <button onClick={() => setIsAdding(!isAdding)} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors shadow-sm">
-          {isAdding ? 'Cancel' : <><Plus size={18} /> New Recipe</>}
-        </button>
+        {!isAdding && !editingId && (
+          <button onClick={() => setIsAdding(true)} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors shadow-sm">
+            <Plus size={18} /> New Recipe
+          </button>
+        )}
       </div>
 
-      {/* Filter Bar */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide">
-        <Filter size={16} className="text-slate-400 flex-shrink-0" />
-        {allTags.map(tag => (
-          <button
-            key={tag}
-            onClick={() => setSelectedTag(tag)}
-            className={`whitespace-nowrap px-3 py-1 rounded-full text-sm font-medium transition-colors ${
-              selectedTag === tag 
-                ? 'bg-emerald-600 text-white shadow-md' 
-                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
-            }`}
-          >
-            {tag}
-          </button>
-        ))}
-      </div>
+      {!isAdding && !editingId && (
+        <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide">
+          <Filter size={16} className="text-slate-400 flex-shrink-0" />
+          {allTags.map(tag => (
+            <button
+              key={tag}
+              onClick={() => setSelectedTag(tag)}
+              className={`whitespace-nowrap px-3 py-1 rounded-full text-sm font-medium transition-colors ${
+                selectedTag === tag 
+                  ? 'bg-emerald-600 text-white shadow-md' 
+                  : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
 
       {isAdding && (
         <RecipeForm 
           knownIngredients={knownIngredients} 
-          existingTags={allTags.filter(t => t !== 'All')} // Pass existing tags for autocomplete
+          existingTags={existingTagsList} 
           onSave={(r) => { onAdd(r); setIsAdding(false); }} 
+          onCancel={() => setIsAdding(false)}
         />
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {filteredRecipes.length === 0 ? (
+        {!isAdding && filteredRecipes.length === 0 && selectedTag !== 'All' && (
           <div className="col-span-full text-center py-10 text-slate-400 italic">
             No recipes found for tag "{selectedTag}"
           </div>
-        ) : (
-          filteredRecipes.map(recipe => (
+        )}
+        
+        {!isAdding && filteredRecipes.map(recipe => (
+          editingId === recipe.id ? (
+            <RecipeForm 
+              key={recipe.id}
+              initialData={recipe}
+              knownIngredients={knownIngredients}
+              existingTags={existingTagsList}
+              onSave={(updated) => { 
+                onUpdate({ ...updated, id: recipe.id }); 
+                setEditingId(null); 
+              }}
+              onCancel={() => setEditingId(null)}
+            />
+          ) : (
             <div key={recipe.id} className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 relative group">
               <div className="flex justify-between items-start mb-4">
                 <div>
@@ -434,7 +461,10 @@ function RecipeManager({ recipes, onAdd, onDelete }) {
                     ))}
                   </div>
                 </div>
-                <button onClick={() => onDelete(recipe.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={18} /></button>
+                <div className="flex gap-2">
+                  <button onClick={() => setEditingId(recipe.id)} className="text-slate-400 hover:text-emerald-600"><Pencil size={18} /></button>
+                  <button onClick={() => onDelete(recipe.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={18} /></button>
+                </div>
               </div>
               <ul className="text-sm text-slate-600 space-y-1">
                 {recipe.ingredients.map((ing, idx) => (
@@ -444,18 +474,21 @@ function RecipeManager({ recipes, onAdd, onDelete }) {
                 ))}
               </ul>
             </div>
-          ))
-        )}
+          )
+        ))}
       </div>
     </div>
   );
 }
 
-function RecipeForm({ onSave, knownIngredients, existingTags }) {
-  const [name, setName] = useState('');
-  const [ingredients, setIngredients] = useState([{ name: '', qty: '', unit: '' }]);
-  const [tags, setTags] = useState([]);
+function RecipeForm({ onSave, onCancel, knownIngredients, existingTags, initialData = {} }) {
+  const [name, setName] = useState(initialData.name || '');
+  const [ingredients, setIngredients] = useState(initialData.ingredients || [{ name: '', qty: '', unit: '' }]);
+  const [tags, setTags] = useState(initialData.tags || []);
   const [tagInput, setTagInput] = useState('');
+  
+  // Unique ID for this form instance's datalist
+  const datalistId = useId();
 
   const handleIngChange = (idx, field, val) => {
     const newIngs = [...ingredients];
@@ -467,7 +500,10 @@ function RecipeForm({ onSave, knownIngredients, existingTags }) {
     if (e.key === 'Enter' || e.type === 'click') {
       e.preventDefault();
       if (tagInput.trim()) {
-        setTags([...tags, tagInput.trim()]);
+        const newTag = tagInput.trim();
+        if (!tags.includes(newTag)) {
+          setTags([...tags, newTag]);
+        }
         setTagInput('');
       }
     }
@@ -484,8 +520,8 @@ function RecipeForm({ onSave, knownIngredients, existingTags }) {
   };
 
   return (
-    <div className="bg-slate-50 border-2 border-dashed border-emerald-200 rounded-xl p-6 mb-8">
-      <h3 className="font-bold text-lg mb-4 text-emerald-800">New Recipe Entry</h3>
+    <div className="col-span-full bg-slate-50 border-2 border-dashed border-emerald-200 rounded-xl p-6 mb-8">
+      <h3 className="font-bold text-lg mb-4 text-emerald-800">{initialData.id ? 'Edit Recipe' : 'New Recipe Entry'}</h3>
       <div className="space-y-4">
         {/* Name & Tags */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -502,9 +538,9 @@ function RecipeForm({ onSave, knownIngredients, existingTags }) {
                 onKeyDown={handleAddTag}
                 className="flex-1 p-2 border rounded-md" 
                 placeholder="Search or add tag..." 
-                list="existing-tags-list"
+                list={datalistId}
               />
-              <datalist id="existing-tags-list">
+              <datalist id={datalistId}>
                 {existingTags.map(t => <option key={t} value={t} />)}
               </datalist>
               <button onClick={handleAddTag} className="bg-emerald-100 text-emerald-700 px-3 rounded-md hover:bg-emerald-200"><Plus size={18}/></button>
@@ -540,7 +576,10 @@ function RecipeForm({ onSave, knownIngredients, existingTags }) {
           ))}
           <div className="flex gap-2 mt-2">
               <button onClick={() => setIngredients([...ingredients, { name: '', qty: '', unit: '' }])} className="text-sm text-emerald-600">+ Add Ingredient</button>
-              <button onClick={save} className="bg-emerald-600 text-white px-6 py-2 rounded-md ml-auto font-bold shadow-sm">Save Recipe</button>
+              <div className="ml-auto flex gap-2">
+                {onCancel && <button onClick={onCancel} className="px-4 py-2 text-slate-500 hover:text-slate-700">Cancel</button>}
+                <button onClick={save} className="bg-emerald-600 text-white px-6 py-2 rounded-md font-bold shadow-sm">Save Recipe</button>
+              </div>
           </div>
         </div>
       </div>
