@@ -9,7 +9,7 @@ import {
 } from 'firebase/auth';
 import { 
   Plus, Trash2, ShoppingCart, Calendar, Database, CheckSquare, 
-  LogOut, Wifi, Loader2, UserCircle, Minus, X
+  LogOut, Wifi, Loader2, UserCircle, Minus, X, ChevronRight
 } from 'lucide-react';
 
 // --- FIREBASE CONFIGURATION ---
@@ -401,9 +401,11 @@ function RecipeForm({ onSave, knownIngredients }) {
 }
 
 function WeeklyPlanner({ days, types, recipes, schedule, onUpdate }) {
+  const weeks = [1, 2];
+
   return (
     <div className="space-y-6">
-      <h2 className="text-2xl font-bold text-slate-800">Weekly Schedule</h2>
+      <h2 className="text-2xl font-bold text-slate-800">14-Day Schedule</h2>
       <div className="overflow-x-auto rounded-xl border border-slate-200 shadow-sm bg-white">
         <table className="w-full text-left border-collapse">
           <thead>
@@ -413,22 +415,48 @@ function WeeklyPlanner({ days, types, recipes, schedule, onUpdate }) {
             </tr>
           </thead>
           <tbody>
-            {days.map(day => (
-              <tr key={day} className="border-b last:border-0 hover:bg-slate-50">
-                <td className="p-4 font-medium">{day}</td>
-                {types.map(type => (
-                  <td key={`${day}-${type}`} className="p-3">
-                    <select 
-                      className="w-full p-2 bg-slate-50 border rounded-lg text-sm"
-                      value={schedule[`${day}-${type}`] || ''}
-                      onChange={(e) => onUpdate(day, type, e.target.value)}
-                    >
-                      <option value="">— Select —</option>
-                      {recipes.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-                    </select>
+            {weeks.map(weekNum => (
+              <React.Fragment key={weekNum}>
+                {/* Visual Separator for Weeks */}
+                <tr className="bg-emerald-50">
+                  <td colSpan={types.length + 1} className="p-2 px-4 font-bold text-emerald-800 text-xs uppercase tracking-widest border-y border-emerald-100">
+                    Week {weekNum}
                   </td>
+                </tr>
+                {days.map(day => (
+                  <tr key={`${weekNum}-${day}`} className="border-b last:border-0 hover:bg-slate-50">
+                    <td className="p-4 font-medium text-slate-600">
+                      {day}
+                    </td>
+                    {types.map(type => {
+                      // Determine Key: Week 1 uses legacy keys, Week 2 uses new prefix
+                      const key = weekNum === 1 ? `${day}-${type}` : `W2-${day}-${type}`;
+                      const selectedValue = schedule[key] || '';
+                      
+                      return (
+                        <td key={key} className="p-3">
+                          <select 
+                            className={`w-full p-2 border rounded-lg text-sm transition-all
+                              ${selectedValue 
+                                ? 'bg-white border-emerald-300 font-bold text-slate-900 shadow-sm' 
+                                : 'bg-slate-50 border-slate-200 text-slate-400 font-normal'}
+                            `}
+                            value={selectedValue}
+                            onChange={(e) => onUpdate(weekNum === 1 ? day : `W2-${day}`, type, e.target.value)}
+                          >
+                            <option value="" className="font-normal text-slate-400">— Select —</option>
+                            {recipes.map(r => (
+                              <option key={r.id} value={r.id} className="font-bold text-slate-900">
+                                {r.name}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                      );
+                    })}
+                  </tr>
                 ))}
-              </tr>
+              </React.Fragment>
             ))}
           </tbody>
         </table>
