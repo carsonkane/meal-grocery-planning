@@ -9,7 +9,7 @@ import {
 } from 'firebase/auth';
 import { 
   Plus, Trash2, ShoppingCart, Calendar, Database, CheckSquare, 
-  LogOut, Wifi, Loader2, UserCircle, Minus
+  LogOut, Wifi, Loader2, UserCircle, Minus, X
 } from 'lucide-react';
 
 // --- FIREBASE CONFIGURATION ---
@@ -217,10 +217,15 @@ function AuthenticatedApp({ user }) {
   }, [schedule, recipes, inventory]);
 
   // --- HANDLERS ---
-  const handleInventory = (item, delta) => {
+  const handleInventory = (item, value, isAbsolute = false) => {
     const currentQty = inventory[item] || 0;
-    // If input is direct number (not delta), use it, otherwise add delta
-    const newQty = typeof delta === 'number' ? Math.max(0, currentQty + delta) : 0;
+    
+    let newQty;
+    if (isAbsolute) {
+        newQty = Math.max(0, value); // Direct set (typing)
+    } else {
+        newQty = Math.max(0, currentQty + value); // Delta (+/- buttons)
+    }
     
     const newInv = { ...inventory };
     if (newQty > 0) {
@@ -311,6 +316,14 @@ function AuthenticatedApp({ user }) {
 
 function RecipeManager({ recipes, onAdd, onDelete }) {
   const [isAdding, setIsAdding] = useState(false);
+  
+  // Extract all known ingredients for autocomplete
+  const knownIngredients = useMemo(() => {
+    const set = new Set();
+    recipes.forEach(r => r.ingredients.forEach(i => set.add(i.name)));
+    return Array.from(set).sort();
+  }, [recipes]);
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
@@ -319,7 +332,7 @@ function RecipeManager({ recipes, onAdd, onDelete }) {
           {isAdding ? 'Cancel' : <><Plus size={18} /> New Recipe</>}
         </button>
       </div>
-      {isAdding && <RecipeForm onSave={(r) => { onAdd(r); setIsAdding(false); }} />}
+      {isAdding && <RecipeForm knownIngredients={knownIngredients} onSave={(r) => { onAdd(r); setIsAdding(false); }} />}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {recipes.map(recipe => (
           <div key={recipe.id} className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
@@ -341,7 +354,7 @@ function RecipeManager({ recipes, onAdd, onDelete }) {
   );
 }
 
-function RecipeForm({ onSave }) {
+function RecipeForm({ onSave, knownIngredients }) {
   const [name, setName] = useState('');
   const [ingredients, setIngredients] = useState([{ name: '', qty: '', unit: '' }]);
   const handleIngChange = (idx, field, val) => {
@@ -359,9 +372,21 @@ function RecipeForm({ onSave }) {
       <h3 className="font-bold text-lg mb-4 text-emerald-800">New Recipe Entry</h3>
       <div className="space-y-4">
         <input value={name} onChange={e => setName(e.target.value)} className="w-full p-2 border rounded-md" placeholder="Recipe Name" />
+        
+        {/* Datalist for Autocomplete */}
+        <datalist id="known-ingredients">
+          {knownIngredients.map(ing => <option key={ing} value={ing} />)}
+        </datalist>
+
         {ingredients.map((ing, idx) => (
           <div key={idx} className="flex gap-2">
-            <input placeholder="Item" className="flex-1 p-2 border rounded-md" value={ing.name} onChange={e => handleIngChange(idx, 'name', e.target.value)} />
+            <input 
+              placeholder="Item (e.g. Eggs)" 
+              className="flex-1 p-2 border rounded-md" 
+              value={ing.name} 
+              list="known-ingredients" // Link input to datalist
+              onChange={e => handleIngChange(idx, 'name', e.target.value)} 
+            />
             <input placeholder="Qty" type="number" className="w-20 p-2 border rounded-md" value={ing.qty} onChange={e => handleIngChange(idx, 'qty', e.target.value)} />
             <input placeholder="Unit" className="w-24 p-2 border rounded-md" value={ing.unit} onChange={e => handleIngChange(idx, 'unit', e.target.value)} />
           </div>
@@ -414,18 +439,26 @@ function WeeklyPlanner({ days, types, recipes, schedule, onUpdate }) {
 
 function InventoryManager({ allIngredients, inventory, onUpdate }) {
   const [view, setView] = useState('all');
+  const [isAdding, setIsAdding] = useState(false);
+  const [newItemName, setNewItemName] = useState('');
+  const [newItemQty, setNewItemQty] = useState(1);
   
   // Create a Map of Ingredient Name -> Unit
   const ingredientMeta = useMemo(() => {
     const map = {};
     allIngredients.forEach(r => r.ingredients.forEach(i => {
-      // Store unit for this ingredient (first one found wins for consistency)
+      // Store unit for this ingredient
       if (!map[i.name]) map[i.name] = i.unit;
     }));
     return map;
   }, [allIngredients]);
   
-  const uniqueIngredients = useMemo(() => Object.keys(ingredientMeta).sort(), [ingredientMeta]);
+  // Merge Recipe Ingredients + Current Inventory Items for the "Database" list
+  const uniqueIngredients = useMemo(() => {
+    const fromRecipes = Object.keys(ingredientMeta);
+    const fromInventory = Object.keys(inventory);
+    return Array.from(new Set([...fromRecipes, ...fromInventory])).sort();
+  }, [ingredientMeta, inventory]);
   
   // Determine displayed list
   const displayed = useMemo(() => {
@@ -437,21 +470,79 @@ function InventoryManager({ allIngredients, inventory, onUpdate }) {
 
   const inStockCount = uniqueIngredients.filter(i => (inventory[i] || 0) > 0).length;
 
+  const handleManualAdd = () => {
+    if (!newItemName) return;
+    onUpdate(newItemName, parseFloat(newItemQty) || 0, true);
+    setNewItemName('');
+    setNewItemQty(1);
+    setIsAdding(false);
+  };
+
   return (
     <div className="max-w-4xl mx-auto">
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold text-slate-800">Pantry Inventory</h2>
-        <div className="flex bg-slate-200 p-1 rounded-lg">
-          <button onClick={() => setView('all')} className={`px-4 py-1.5 rounded-md text-sm ${view === 'all' ? 'bg-white shadow' : ''}`}>All</button>
-          <button onClick={() => setView('stock')} className={`px-4 py-1.5 rounded-md text-sm ${view === 'stock' ? 'bg-white shadow' : ''}`}>Stock ({inStockCount})</button>
+      {/* Header & Controls */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-800">Pantry Inventory</h2>
+          <p className="text-slate-500 text-sm">Manage what you have in stock.</p>
+        </div>
+        <div className="flex gap-2">
+          <div className="flex bg-slate-200 p-1 rounded-lg">
+            <button onClick={() => setView('all')} className={`px-4 py-1.5 rounded-md text-sm ${view === 'all' ? 'bg-white shadow' : ''}`}>All</button>
+            <button onClick={() => setView('stock')} className={`px-4 py-1.5 rounded-md text-sm ${view === 'stock' ? 'bg-white shadow' : ''}`}>Stock ({inStockCount})</button>
+          </div>
+          <button 
+            onClick={() => setIsAdding(!isAdding)}
+            className="bg-emerald-600 text-white p-2 rounded-lg hover:bg-emerald-700 transition shadow-sm"
+            title="Add new item"
+          >
+            {isAdding ? <X size={20} /> : <Plus size={20} />}
+          </button>
         </div>
       </div>
+
+      {/* Add Item Form */}
+      {isAdding && (
+        <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 mb-6 flex flex-col sm:flex-row gap-3 items-end">
+          <div className="flex-1 w-full">
+            <label className="block text-xs font-semibold text-emerald-800 mb-1">ITEM NAME</label>
+            <input 
+              className="w-full p-2 border border-emerald-200 rounded-md text-sm" 
+              placeholder="e.g. Rice" 
+              list="inventory-known-ingredients"
+              value={newItemName}
+              onChange={e => setNewItemName(e.target.value)}
+            />
+            <datalist id="inventory-known-ingredients">
+              {uniqueIngredients.map(ing => <option key={ing} value={ing} />)}
+            </datalist>
+          </div>
+          <div className="w-24">
+            <label className="block text-xs font-semibold text-emerald-800 mb-1">QTY</label>
+            <input 
+              type="number" 
+              className="w-full p-2 border border-emerald-200 rounded-md text-sm" 
+              placeholder="1" 
+              value={newItemQty}
+              onChange={e => setNewItemQty(e.target.value)}
+            />
+          </div>
+          <button 
+            onClick={handleManualAdd}
+            className="w-full sm:w-auto bg-emerald-600 text-white px-4 py-2 rounded-md text-sm font-bold hover:bg-emerald-700"
+          >
+            Add
+          </button>
+        </div>
+      )}
+
+      {/* Inventory List */}
       <div className="bg-white rounded-xl shadow-sm border p-4">
-        {displayed.length === 0 ? <div className="text-center p-8 text-slate-400">No ingredients found in recipes.</div> : (
+        {displayed.length === 0 ? <div className="text-center p-8 text-slate-400">No ingredients found.</div> : (
           <div className="divide-y">
             {displayed.map(item => {
               const qty = inventory[item] || 0;
-              const unit = ingredientMeta[item] || ''; // Retrieve unit
+              const unit = ingredientMeta[item] || ''; // Retrieve unit if known
               return (
                 <div key={item} className={`flex items-center justify-between p-3 ${qty > 0 ? 'bg-emerald-50/50' : ''}`}>
                   <span className={`font-medium ${qty > 0 ? 'text-emerald-900' : 'text-slate-600'}`}>{item}</span>
@@ -463,9 +554,15 @@ function InventoryManager({ allIngredients, inventory, onUpdate }) {
                     >
                       <Minus size={16} />
                     </button>
-                    {/* Show Qty + Unit */}
-                    <div className="min-w-[4rem] px-2 text-center font-mono text-sm font-bold text-slate-700 whitespace-nowrap">
-                      {qty} <span className="text-xs font-normal text-slate-400">{unit}</span>
+                    {/* INPUT FIELD FOR QUANTITY */}
+                    <div className="flex items-center">
+                      <input 
+                        type="number"
+                        className="w-16 text-center font-mono text-sm font-bold text-slate-700 outline-none bg-transparent"
+                        value={qty}
+                        onChange={(e) => onUpdate(item, parseFloat(e.target.value) || 0, true)} // True = Absolute set
+                      />
+                      <span className="text-xs font-normal text-slate-400 pr-2 min-w-[20px]">{unit}</span>
                     </div>
                     <button 
                       onClick={() => onUpdate(item, 1)}
@@ -504,7 +601,6 @@ function ShoppingListView({ total, buyList }) {
               <div className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${view === 'buy' ? 'bg-emerald-500' : 'bg-slate-300'}`} />
               <div>
                 <div className="font-medium text-slate-800">{item.rawName}</div>
-                {/* Feature: Show which recipes use this ingredient */}
                 <div className="flex flex-wrap gap-1 mt-1">
                   {item.usedIn.map(r => (
                     <span key={r} className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
@@ -516,7 +612,6 @@ function ShoppingListView({ total, buyList }) {
             </div>
             
             <div className="flex items-center gap-4 self-end sm:self-auto">
-               {/* Show Stock info if viewing Buy List */}
                {view === 'buy' && item.stockQty > 0 && (
                  <div className="text-xs text-emerald-600 font-medium bg-emerald-50 px-2 py-1 rounded">
                    Have: {item.stockQty} {item.unit}
