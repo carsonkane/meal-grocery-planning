@@ -4,7 +4,8 @@ import {
   getFirestore, doc, setDoc, onSnapshot, updateDoc 
 } from 'firebase/firestore';
 import { 
-  getAuth, signInAnonymously, onAuthStateChanged, signOut 
+  getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, 
+  onAuthStateChanged, signOut 
 } from 'firebase/auth';
 import { 
   Plus, Trash2, ShoppingCart, Calendar, Database, CheckSquare, 
@@ -12,7 +13,6 @@ import {
 } from 'lucide-react';
 
 // --- FIREBASE CONFIGURATION ---
-// I have integrated your specific keys here:
 const firebaseConfig = {
   apiKey: "AIzaSyAXBaj32kPuwXmEpY9LjTq5d5h4ulRP3N4",
   authDomain: "meal-planner-sync-49152.firebaseapp.com",
@@ -59,23 +59,27 @@ export default function App() {
 
   if (loading) return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin text-emerald-600" /></div>;
 
-  return user ? <AuthenticatedApp user={user} /> : <AnonymousAuthScreen />;
+  return user ? <AuthenticatedApp user={user} /> : <AuthScreen />;
 }
 
-// --- AUTH COMPONENT (ANONYMOUS) ---
-function AnonymousAuthScreen() {
+// --- AUTH COMPONENT (EMAIL/PASSWORD) ---
+function AuthScreen() {
+  const [isLogin, setIsLogin] = useState(true);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const [isSigningIn, setIsSigningIn] = useState(false);
 
-  const handleAuth = async () => {
-    setIsSigningIn(true);
+  const handleAuth = async (e) => {
+    e.preventDefault();
     setError('');
     try {
-      await signInAnonymously(auth);
+      if (isLogin) {
+        await signInWithEmailAndPassword(auth, email, password);
+      } else {
+        await createUserWithEmailAndPassword(auth, email, password);
+      }
     } catch (err) {
-      console.error(err);
-      setError('Could not start session. Check console.');
-      setIsSigningIn(false);
+      setError(err.message.replace('Firebase: ', ''));
     }
   };
 
@@ -84,20 +88,31 @@ function AnonymousAuthScreen() {
       <div className="bg-white p-8 rounded-xl shadow-xl w-full max-w-md text-center">
         <Database className="w-12 h-12 text-emerald-600 mx-auto mb-4" />
         <h1 className="text-2xl font-bold text-slate-800 mb-2">Smart Meal Sync</h1>
-        <p className="text-slate-500 mb-8">Plan meals across devices instantly.</p>
+        <p className="text-slate-500 mb-8">{isLogin ? 'Sign in to sync across devices' : 'Create an account to get started'}</p>
         
-        {error && <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm mb-4">{error}</div>}
+        <form onSubmit={handleAuth} className="space-y-4">
+          {error && <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm text-left">{error}</div>}
+          <input 
+            type="email" placeholder="Email" required 
+            className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none"
+            value={email} onChange={e => setEmail(e.target.value)}
+          />
+          <input 
+            type="password" placeholder="Password" required 
+            className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none"
+            value={password} onChange={e => setPassword(e.target.value)}
+          />
+          <button type="submit" className="w-full bg-emerald-600 text-white py-3 rounded-lg font-bold hover:bg-emerald-700 transition">
+            {isLogin ? 'Sign In' : 'Create Account'}
+          </button>
+        </form>
         
         <button 
-          onClick={handleAuth} 
-          disabled={isSigningIn}
-          className="w-full bg-emerald-600 text-white py-3 rounded-lg font-bold hover:bg-emerald-700 transition flex items-center justify-center gap-2"
+          onClick={() => setIsLogin(!isLogin)} 
+          className="w-full mt-4 text-slate-500 text-sm hover:text-emerald-600"
         >
-          {isSigningIn ? <Loader2 className="animate-spin" /> : 'Start Planning'}
+          {isLogin ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
         </button>
-        <p className="text-xs text-slate-400 mt-4">
-          Session persists on this device automatically.
-        </p>
       </div>
     </div>
   );
@@ -115,6 +130,7 @@ function AuthenticatedApp({ user }) {
 
   // --- FIRESTORE SYNC ENGINE ---
   useEffect(() => {
+    // Syncs specifically to the logged-in User ID
     const docRef = doc(db, 'users', user.uid, 'planner', 'data');
 
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
@@ -215,7 +231,7 @@ function AuthenticatedApp({ user }) {
               <h1 className="text-xl font-bold tracking-tight">Smart Meal Sync</h1>
               <div className="flex items-center gap-1 text-xs text-slate-400">
                 <UserCircle size={12} />
-                <span className="font-mono">ID: {user.uid.slice(0,6)}...</span>
+                <span className="font-mono">User: {user.email || 'Guest'}</span>
               </div>
             </div>
           </div>
@@ -259,7 +275,7 @@ function AuthenticatedApp({ user }) {
   );
 }
 
-// --- Sub-Components (Unchanged logic, just re-declaring for self-containment) ---
+// --- Sub-Components ---
 
 function RecipeManager({ recipes, onAdd, onDelete }) {
   const [isAdding, setIsAdding] = useState(false);
