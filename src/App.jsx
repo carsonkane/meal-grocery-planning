@@ -32,6 +32,7 @@ const INITIAL_RECIPES = [
   {
     id: '1',
     name: 'Oatmeal w/ Berries',
+    tags: ['Breakfast', 'Vegetarian'],
     ingredients: [
       { name: 'Rolled Oats', qty: 0.5, unit: 'cup' },
       { name: 'Milk', qty: 1, unit: 'cup' },
@@ -126,8 +127,8 @@ function AuthenticatedApp({ user }) {
   const [recipes, setRecipes] = useState([]);
   const [schedule, setSchedule] = useState({});
   const [inventory, setInventory] = useState({});
-  const [customUnits, setCustomUnits] = useState({}); // New: Store units for manual items
-  const [extraList, setExtraList] = useState([]); // New: Manual shopping list items
+  const [customUnits, setCustomUnits] = useState({});
+  const [extraList, setExtraList] = useState([]);
 
   // --- FIRESTORE SYNC ENGINE ---
   useEffect(() => {
@@ -178,11 +179,22 @@ function AuthenticatedApp({ user }) {
     }
   };
 
-  // --- AGGREGATION LOGIC (Smart Shopping List) ---
+  // --- AGGREGATION LOGIC ---
+  const allKnownIngredients = useMemo(() => {
+    const set = new Set();
+    // 1. From Recipes
+    recipes.forEach(r => r.ingredients.forEach(i => set.add(i.name)));
+    // 2. From Inventory
+    Object.keys(inventory).forEach(k => set.add(k));
+    // 3. From Extra Shopping List
+    extraList.forEach(i => set.add(i.name));
+    
+    return Array.from(set).sort();
+  }, [recipes, inventory, extraList]);
+
   const { totalRequirements, toBuyList } = useMemo(() => {
     const totals = {};
     
-    // 1. Aggregate Recipe Needs
     Object.values(schedule).forEach(recipeId => {
       if (!recipeId) return;
       const recipe = recipes.find(r => r.id === recipeId);
@@ -207,7 +219,6 @@ function AuthenticatedApp({ user }) {
     const totalReqs = Object.values(totals)
       .map(item => ({ ...item, usedIn: Array.from(item.usedIn) }));
 
-    // 2. Calculate "To Buy" (Need - Have)
     const derivedBuyList = totalReqs.map(req => {
       const stockQty = inventory[req.rawName] || 0;
       const needQty = req.qty;
@@ -215,8 +226,6 @@ function AuthenticatedApp({ user }) {
       return { ...req, buyQty, stockQty };
     }).filter(item => item.buyQty > 0);
 
-    // 3. Merge with Manual Extra List
-    // We treat extras as separate line items to avoid complex unit merging logic
     const finalBuyList = [
       ...derivedBuyList,
       ...extraList.map(item => ({ 
@@ -229,7 +238,6 @@ function AuthenticatedApp({ user }) {
       }))
     ].sort((a, b) => a.rawName.localeCompare(b.rawName));
 
-    // For Total view, we also show extras
     const finalTotalList = [
       ...totalReqs,
       ...extraList.map(item => ({ 
@@ -265,7 +273,6 @@ function AuthenticatedApp({ user }) {
     setInventory(newInv);
     pushUpdate('inventory', newInv);
 
-    // If a unit was provided (Manual Add), update customUnits meta
     if (unit) {
       const newCustomUnits = { ...customUnits, [item]: unit };
       setCustomUnits(newCustomUnits);
@@ -304,6 +311,11 @@ function AuthenticatedApp({ user }) {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-20 md:pb-0">
+      {/* GLOBAL DATALIST for Autocomplete */}
+      <datalist id="all-ingredients">
+        {allKnownIngredients.map(ing => <option key={ing} value={ing} />)}
+      </datalist>
+
       <header className="bg-slate-900 text-white p-4 shadow-lg sticky top-0 z-50">
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
           <div className="flex items-center gap-2">
@@ -362,13 +374,6 @@ function AuthenticatedApp({ user }) {
 
 function RecipeManager({ recipes, onAdd, onDelete }) {
   const [isAdding, setIsAdding] = useState(false);
-  
-  // Extract all known ingredients for autocomplete
-  const knownIngredients = useMemo(() => {
-    const set = new Set();
-    recipes.forEach(r => r.ingredients.forEach(i => set.add(i.name)));
-    return Array.from(set).sort();
-  }, [recipes]);
 
   return (
     <div className="space-y-6">
@@ -378,12 +383,21 @@ function RecipeManager({ recipes, onAdd, onDelete }) {
           {isAdding ? 'Cancel' : <><Plus size={18} /> New Recipe</>}
         </button>
       </div>
-      {isAdding && <RecipeForm knownIngredients={knownIngredients} onSave={(r) => { onAdd(r); setIsAdding(false); }} />}
+      {isAdding && <RecipeForm onSave={(r) => { onAdd(r); setIsAdding(false); }} />}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {recipes.map(recipe => (
-          <div key={recipe.id} className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+          <div key={recipe.id} className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 relative group">
             <div className="flex justify-between items-start mb-4">
-              <h3 className="font-bold text-lg text-slate-800">{recipe.name}</h3>
+              <div>
+                <h3 className="font-bold text-lg text-slate-800">{recipe.name}</h3>
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {(recipe.tags || []).map(tag => (
+                    <span key={tag} className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-bold uppercase tracking-wide">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              </div>
               <button onClick={() => onDelete(recipe.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={18} /></button>
             </div>
             <ul className="text-sm text-slate-600 space-y-1">
@@ -400,45 +414,93 @@ function RecipeManager({ recipes, onAdd, onDelete }) {
   );
 }
 
-function RecipeForm({ onSave, knownIngredients }) {
+function RecipeForm({ onSave }) {
   const [name, setName] = useState('');
   const [ingredients, setIngredients] = useState([{ name: '', qty: '', unit: '' }]);
+  const [tags, setTags] = useState([]);
+  const [tagInput, setTagInput] = useState('');
+
   const handleIngChange = (idx, field, val) => {
     const newIngs = [...ingredients];
     newIngs[idx][field] = val;
     setIngredients(newIngs);
   };
+
+  const handleAddTag = (e) => {
+    if (e.key === 'Enter' || e.type === 'click') {
+      e.preventDefault();
+      if (tagInput.trim()) {
+        setTags([...tags, tagInput.trim()]);
+        setTagInput('');
+      }
+    }
+  };
+
+  const removeTag = (tagToRemove) => {
+    setTags(tags.filter(t => t !== tagToRemove));
+  };
+
   const save = () => {
     if (!name) return;
     const validIngs = ingredients.filter(i => i.name && i.qty);
-    onSave({ name, ingredients: validIngs });
+    onSave({ name, ingredients: validIngs, tags });
   };
+
   return (
     <div className="bg-slate-50 border-2 border-dashed border-emerald-200 rounded-xl p-6 mb-8">
       <h3 className="font-bold text-lg mb-4 text-emerald-800">New Recipe Entry</h3>
       <div className="space-y-4">
-        <input value={name} onChange={e => setName(e.target.value)} className="w-full p-2 border rounded-md" placeholder="Recipe Name" />
-        
-        <datalist id="known-ingredients">
-          {knownIngredients.map(ing => <option key={ing} value={ing} />)}
-        </datalist>
-
-        {ingredients.map((ing, idx) => (
-          <div key={idx} className="flex gap-2">
-            <input 
-              placeholder="Item (e.g. Eggs)" 
-              className="flex-1 p-2 border rounded-md" 
-              value={ing.name} 
-              list="known-ingredients"
-              onChange={e => handleIngChange(idx, 'name', e.target.value)} 
-            />
-            <input placeholder="Qty" type="number" className="w-20 p-2 border rounded-md" value={ing.qty} onChange={e => handleIngChange(idx, 'qty', e.target.value)} />
-            <input placeholder="Unit" className="w-24 p-2 border rounded-md" value={ing.unit} onChange={e => handleIngChange(idx, 'unit', e.target.value)} />
+        {/* Name & Tags */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs font-semibold text-emerald-800 mb-1">NAME</label>
+            <input value={name} onChange={e => setName(e.target.value)} className="w-full p-2 border rounded-md" placeholder="e.g. Avocado Toast" />
           </div>
-        ))}
-        <div className="flex gap-2">
-            <button onClick={() => setIngredients([...ingredients, { name: '', qty: '', unit: '' }])} className="text-sm text-emerald-600">+ Add Ingredient</button>
-            <button onClick={save} className="bg-emerald-600 text-white px-6 py-2 rounded-md ml-auto">Save Recipe</button>
+          <div>
+            <label className="block text-xs font-semibold text-emerald-800 mb-1">TAGS (Press Enter)</label>
+            <div className="flex gap-2">
+              <input 
+                value={tagInput} 
+                onChange={e => setTagInput(e.target.value)} 
+                onKeyDown={handleAddTag}
+                className="flex-1 p-2 border rounded-md" 
+                placeholder="e.g. Breakfast" 
+              />
+              <button onClick={handleAddTag} className="bg-emerald-100 text-emerald-700 px-3 rounded-md hover:bg-emerald-200"><Plus size={18}/></button>
+            </div>
+          </div>
+        </div>
+
+        {/* Tag List */}
+        {tags.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {tags.map(tag => (
+              <span key={tag} className="flex items-center gap-1 bg-white border border-emerald-200 text-emerald-700 px-2 py-1 rounded-full text-xs font-bold">
+                {tag} <button onClick={() => removeTag(tag)} className="hover:text-red-500"><X size={12} /></button>
+              </span>
+            ))}
+          </div>
+        )}
+        
+        <div className="border-t border-slate-200 pt-4">
+          <label className="block text-xs font-semibold text-emerald-800 mb-2">INGREDIENTS</label>
+          {ingredients.map((ing, idx) => (
+            <div key={idx} className="flex gap-2 mb-2">
+              <input 
+                placeholder="Item" 
+                className="flex-1 p-2 border rounded-md" 
+                value={ing.name} 
+                list="all-ingredients" // Uses Global Datalist
+                onChange={e => handleIngChange(idx, 'name', e.target.value)} 
+              />
+              <input placeholder="Qty" type="number" className="w-20 p-2 border rounded-md" value={ing.qty} onChange={e => handleIngChange(idx, 'qty', e.target.value)} />
+              <input placeholder="Unit" className="w-24 p-2 border rounded-md" value={ing.unit} onChange={e => handleIngChange(idx, 'unit', e.target.value)} />
+            </div>
+          ))}
+          <div className="flex gap-2 mt-2">
+              <button onClick={() => setIngredients([...ingredients, { name: '', qty: '', unit: '' }])} className="text-sm text-emerald-600">+ Add Ingredient</button>
+              <button onClick={save} className="bg-emerald-600 text-white px-6 py-2 rounded-md ml-auto font-bold shadow-sm">Save Recipe</button>
+          </div>
         </div>
       </div>
     </div>
@@ -513,10 +575,9 @@ function InventoryManager({ allIngredients, inventory, customUnits, onUpdate }) 
   const [isAdding, setIsAdding] = useState(false);
   const [newItemName, setNewItemName] = useState('');
   const [newItemQty, setNewItemQty] = useState(1);
-  const [newItemUnit, setNewItemUnit] = useState(''); // New: Unit state
+  const [newItemUnit, setNewItemUnit] = useState('');
   
   // Create a Map of Ingredient Name -> Unit
-  // Priority: 1. Custom Units (Manual Override), 2. Recipe Units
   const ingredientMeta = useMemo(() => {
     const map = { ...customUnits };
     allIngredients.forEach(r => r.ingredients.forEach(i => {
@@ -525,26 +586,22 @@ function InventoryManager({ allIngredients, inventory, customUnits, onUpdate }) 
     return map;
   }, [allIngredients, customUnits]);
   
-  // Merge Recipe Ingredients + Current Inventory Items for the "Database" list
-  const uniqueIngredients = useMemo(() => {
+  // Displayed List - Use Recipe Items + Current Inventory Items
+  const displayedList = useMemo(() => {
     const fromRecipes = Object.keys(ingredientMeta);
     const fromInventory = Object.keys(inventory);
-    return Array.from(new Set([...fromRecipes, ...fromInventory])).sort();
-  }, [ingredientMeta, inventory]);
-  
-  // Determine displayed list
-  const displayed = useMemo(() => {
+    const combined = Array.from(new Set([...fromRecipes, ...fromInventory])).sort();
+    
     if (view === 'stock') {
-      return uniqueIngredients.filter(i => (inventory[i] || 0) > 0);
+      return combined.filter(i => (inventory[i] || 0) > 0);
     }
-    return uniqueIngredients;
-  }, [view, uniqueIngredients, inventory]);
+    return combined;
+  }, [ingredientMeta, inventory, view]);
 
-  const inStockCount = uniqueIngredients.filter(i => (inventory[i] || 0) > 0).length;
+  const inStockCount = Object.keys(inventory).length;
 
   const handleManualAdd = () => {
     if (!newItemName) return;
-    // Pass the unit so it can be saved to customUnits
     onUpdate(newItemName, parseFloat(newItemQty) || 0, true, newItemUnit);
     setNewItemName('');
     setNewItemQty(1);
@@ -583,19 +640,15 @@ function InventoryManager({ allIngredients, inventory, customUnits, onUpdate }) 
             <input 
               className="w-full p-2 border border-emerald-200 rounded-md text-sm" 
               placeholder="e.g. Rice" 
-              list="inventory-known-ingredients"
+              list="all-ingredients" // Uses Global Datalist
               value={newItemName}
               onChange={e => {
                 setNewItemName(e.target.value);
-                // Auto-fill unit if known
                 if (ingredientMeta[e.target.value]) {
                   setNewItemUnit(ingredientMeta[e.target.value]);
                 }
               }}
             />
-            <datalist id="inventory-known-ingredients">
-              {uniqueIngredients.map(ing => <option key={ing} value={ing} />)}
-            </datalist>
           </div>
           <div className="w-20">
             <label className="block text-xs font-semibold text-emerald-800 mb-1">QTY</label>
@@ -627,9 +680,9 @@ function InventoryManager({ allIngredients, inventory, customUnits, onUpdate }) 
 
       {/* Inventory List */}
       <div className="bg-white rounded-xl shadow-sm border p-4">
-        {displayed.length === 0 ? <div className="text-center p-8 text-slate-400">No ingredients found.</div> : (
+        {displayedList.length === 0 ? <div className="text-center p-8 text-slate-400">No ingredients found.</div> : (
           <div className="divide-y">
-            {displayed.map(item => {
+            {displayedList.map(item => {
               const qty = inventory[item] || 0;
               const unit = ingredientMeta[item] || ''; 
               return (
@@ -703,7 +756,13 @@ function ShoppingListView({ total, buyList, onAddExtra }) {
         <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 flex flex-col sm:flex-row gap-3 items-end">
           <div className="flex-1 w-full">
             <label className="block text-xs font-semibold text-emerald-800 mb-1">EXTRA ITEM</label>
-            <input className="w-full p-2 border border-emerald-200 rounded-md text-sm" placeholder="e.g. Paper Towels" value={extraName} onChange={e => setExtraName(e.target.value)} />
+            <input 
+              className="w-full p-2 border border-emerald-200 rounded-md text-sm" 
+              placeholder="e.g. Paper Towels" 
+              value={extraName} 
+              list="all-ingredients" // Uses Global Datalist
+              onChange={e => setExtraName(e.target.value)} 
+            />
           </div>
           <div className="w-20">
             <label className="block text-xs font-semibold text-emerald-800 mb-1">QTY</label>
