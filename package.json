@@ -4,15 +4,16 @@
   "version": "0.0.0",
   "type": "module",
   "homepage": "https://carsonkane.github.io/meal-grocery-planning",
-"scripts": {
-  "dev": "vite",
-  "build": "vite build",
-  "lint": "eslint .",          
-  "preview": "vite preview",   
-  "predeploy": "npm run build", 
-  "deploy": "gh-pages -d dist" 
-},
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d dist"
+  },
   "dependencies": {
+    "@tailwindcss/postcss": "^4.1.18",
     "lucide-react": "^0.563.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
