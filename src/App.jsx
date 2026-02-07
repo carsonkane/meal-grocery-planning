@@ -9,7 +9,7 @@ import {
 } from 'firebase/auth';
 import { 
   Plus, Trash2, ShoppingCart, Calendar, Database, CheckSquare, 
-  LogOut, Wifi, Loader2, UserCircle, Minus, X, Tag
+  LogOut, Wifi, Loader2, UserCircle, Minus, X, Tag, Filter
 } from 'lucide-react';
 
 // --- FIREBASE CONFIGURATION ---
@@ -182,13 +182,9 @@ function AuthenticatedApp({ user }) {
   // --- AGGREGATION LOGIC ---
   const allKnownIngredients = useMemo(() => {
     const set = new Set();
-    // 1. From Recipes
     recipes.forEach(r => r.ingredients.forEach(i => set.add(i.name)));
-    // 2. From Inventory
     Object.keys(inventory).forEach(k => set.add(k));
-    // 3. From Extra Shopping List
     extraList.forEach(i => set.add(i.name));
-    
     return Array.from(set).sort();
   }, [recipes, inventory, extraList]);
 
@@ -255,20 +251,10 @@ function AuthenticatedApp({ user }) {
   // --- HANDLERS ---
   const handleInventory = (item, value, isAbsolute = false, unit = null) => {
     const currentQty = inventory[item] || 0;
-    
-    let newQty;
-    if (isAbsolute) {
-        newQty = Math.max(0, value);
-    } else {
-        newQty = Math.max(0, currentQty + value);
-    }
-    
+    let newQty = isAbsolute ? Math.max(0, value) : Math.max(0, currentQty + value);
     const newInv = { ...inventory };
-    if (newQty > 0) {
-      newInv[item] = newQty;
-    } else {
-      delete newInv[item];
-    }
+    if (newQty > 0) newInv[item] = newQty;
+    else delete newInv[item];
     
     setInventory(newInv);
     pushUpdate('inventory', newInv);
@@ -311,7 +297,6 @@ function AuthenticatedApp({ user }) {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-20 md:pb-0">
-      {/* GLOBAL DATALIST for Autocomplete */}
       <datalist id="all-ingredients">
         {allKnownIngredients.map(ing => <option key={ing} value={ing} />)}
       </datalist>
@@ -374,47 +359,99 @@ function AuthenticatedApp({ user }) {
 
 function RecipeManager({ recipes, onAdd, onDelete }) {
   const [isAdding, setIsAdding] = useState(false);
+  const [selectedTag, setSelectedTag] = useState('All');
+
+  // Derive unique tags from all recipes
+  const allTags = useMemo(() => {
+    const tags = new Set(recipes.flatMap(r => r.tags || []));
+    return ['All', ...Array.from(tags).sort()];
+  }, [recipes]);
+
+  // Derive filtered recipes
+  const filteredRecipes = useMemo(() => {
+    if (selectedTag === 'All') return recipes;
+    return recipes.filter(r => (r.tags || []).includes(selectedTag));
+  }, [recipes, selectedTag]);
+
+  // Extract all known ingredients for autocomplete
+  const knownIngredients = useMemo(() => {
+    const set = new Set();
+    recipes.forEach(r => r.ingredients.forEach(i => set.add(i.name)));
+    return Array.from(set).sort();
+  }, [recipes]);
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <h2 className="text-2xl font-bold text-slate-800">Recipe Database</h2>
         <button onClick={() => setIsAdding(!isAdding)} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors shadow-sm">
           {isAdding ? 'Cancel' : <><Plus size={18} /> New Recipe</>}
         </button>
       </div>
-      {isAdding && <RecipeForm onSave={(r) => { onAdd(r); setIsAdding(false); }} />}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {recipes.map(recipe => (
-          <div key={recipe.id} className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 relative group">
-            <div className="flex justify-between items-start mb-4">
-              <div>
-                <h3 className="font-bold text-lg text-slate-800">{recipe.name}</h3>
-                <div className="flex flex-wrap gap-1 mt-1">
-                  {(recipe.tags || []).map(tag => (
-                    <span key={tag} className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-bold uppercase tracking-wide">
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-              </div>
-              <button onClick={() => onDelete(recipe.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={18} /></button>
-            </div>
-            <ul className="text-sm text-slate-600 space-y-1">
-              {recipe.ingredients.map((ing, idx) => (
-                <li key={idx} className="flex justify-between border-b border-slate-50 pb-1">
-                  <span>{ing.name}</span><span className="font-mono text-slate-400">{ing.qty} {ing.unit}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
+
+      {/* Filter Bar */}
+      <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide">
+        <Filter size={16} className="text-slate-400 flex-shrink-0" />
+        {allTags.map(tag => (
+          <button
+            key={tag}
+            onClick={() => setSelectedTag(tag)}
+            className={`whitespace-nowrap px-3 py-1 rounded-full text-sm font-medium transition-colors ${
+              selectedTag === tag 
+                ? 'bg-emerald-600 text-white shadow-md' 
+                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+            }`}
+          >
+            {tag}
+          </button>
         ))}
+      </div>
+
+      {isAdding && (
+        <RecipeForm 
+          knownIngredients={knownIngredients} 
+          existingTags={allTags.filter(t => t !== 'All')} // Pass existing tags for autocomplete
+          onSave={(r) => { onAdd(r); setIsAdding(false); }} 
+        />
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {filteredRecipes.length === 0 ? (
+          <div className="col-span-full text-center py-10 text-slate-400 italic">
+            No recipes found for tag "{selectedTag}"
+          </div>
+        ) : (
+          filteredRecipes.map(recipe => (
+            <div key={recipe.id} className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 relative group">
+              <div className="flex justify-between items-start mb-4">
+                <div>
+                  <h3 className="font-bold text-lg text-slate-800">{recipe.name}</h3>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {(recipe.tags || []).map(tag => (
+                      <span key={tag} className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-bold uppercase tracking-wide">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <button onClick={() => onDelete(recipe.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={18} /></button>
+              </div>
+              <ul className="text-sm text-slate-600 space-y-1">
+                {recipe.ingredients.map((ing, idx) => (
+                  <li key={idx} className="flex justify-between border-b border-slate-50 pb-1">
+                    <span>{ing.name}</span><span className="font-mono text-slate-400">{ing.qty} {ing.unit}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))
+        )}
       </div>
     </div>
   );
 }
 
-function RecipeForm({ onSave }) {
+function RecipeForm({ onSave, knownIngredients, existingTags }) {
   const [name, setName] = useState('');
   const [ingredients, setIngredients] = useState([{ name: '', qty: '', unit: '' }]);
   const [tags, setTags] = useState([]);
@@ -464,8 +501,12 @@ function RecipeForm({ onSave }) {
                 onChange={e => setTagInput(e.target.value)} 
                 onKeyDown={handleAddTag}
                 className="flex-1 p-2 border rounded-md" 
-                placeholder="e.g. Breakfast" 
+                placeholder="Search or add tag..." 
+                list="existing-tags-list"
               />
+              <datalist id="existing-tags-list">
+                {existingTags.map(t => <option key={t} value={t} />)}
+              </datalist>
               <button onClick={handleAddTag} className="bg-emerald-100 text-emerald-700 px-3 rounded-md hover:bg-emerald-200"><Plus size={18}/></button>
             </div>
           </div>
