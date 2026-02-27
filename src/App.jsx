@@ -10,7 +10,7 @@ import {
 import { 
   Plus, Trash2, ShoppingCart, Calendar, Database, CheckSquare, 
   LogOut, Wifi, Loader2, UserCircle, Minus, X, Tag, Filter, Pencil, 
-  AlertTriangle, ShoppingBag
+  AlertTriangle, ShoppingBag, Check
 } from 'lucide-react';
 
 // --- FIREBASE CONFIGURATION ---
@@ -129,8 +129,8 @@ function AuthenticatedApp({ user }) {
   const [schedule, setSchedule] = useState({});
   const [inventory, setInventory] = useState({});
   const [customUnits, setCustomUnits] = useState({});
-  const [staples, setStaples] = useState([]); // New: Recurring weekly needs
-  const [extraList, setExtraList] = useState([]); // One-off manual adds
+  const [staples, setStaples] = useState([]); 
+  const [extraList, setExtraList] = useState([]); 
 
   // --- FIRESTORE SYNC ENGINE ---
   useEffect(() => {
@@ -317,6 +317,16 @@ function AuthenticatedApp({ user }) {
     pushUpdate('extraList', newExtras);
   };
 
+  const handlePurchaseItem = (item) => {
+    // Delta update to inventory (adds the bought quantity to current stock)
+    handleInventory(item.rawName, item.buyQty, false, item.unit);
+    
+    // If it's a one-off extra, remove it entirely from the extra list once bought
+    if (item.isManual) {
+      handleExtraList('remove', item);
+    }
+  };
+
   const handleSchedule = (day, type, rId) => {
     const newSched = { ...schedule, [`${day}-${type}`]: rId };
     setSchedule(newSched);
@@ -397,7 +407,7 @@ function AuthenticatedApp({ user }) {
         {activeTab === 'planner' && <WeeklyPlanner days={DAYS} types={MEAL_TYPES} recipes={recipes} schedule={schedule} onUpdate={handleSchedule} />}
         {activeTab === 'staples' && <StaplesManager staples={staples} onUpdateStaple={handleStapleList} />}
         {activeTab === 'inventory' && <InventoryManager allIngredients={recipes} inventory={inventory} customUnits={customUnits} staples={staples} onUpdate={handleInventory} />}
-        {activeTab === 'shopping' && <ShoppingListView total={totalRequirements} buyList={toBuyList} inventoryUnits={customUnits} onAddExtra={handleExtraList} onUpdateInventory={handleInventory} />}
+        {activeTab === 'shopping' && <ShoppingListView total={totalRequirements} buyList={toBuyList} inventoryUnits={customUnits} onAddExtra={handleExtraList} onUpdateInventory={handleInventory} onPurchaseItem={handlePurchaseItem} />}
       </main>
     </div>
   );
@@ -910,7 +920,7 @@ function InventoryManager({ allIngredients, inventory, customUnits, staples, onU
   );
 }
 
-function ShoppingListView({ total, buyList, inventoryUnits, onAddExtra, onUpdateInventory }) {
+function ShoppingListView({ total, buyList, inventoryUnits, onAddExtra, onUpdateInventory, onPurchaseItem }) {
   const [view, setView] = useState('buy');
   const [isAdding, setIsAdding] = useState(false);
   const [extraName, setExtraName] = useState('');
@@ -1046,6 +1056,18 @@ function ShoppingListView({ total, buyList, inventoryUnits, onAddExtra, onUpdate
                  <div className="font-mono bg-slate-100 px-3 py-1 rounded text-sm min-w-[80px] text-center">
                    {view === 'buy' ? item.buyQty : item.qty} {item.unit}
                  </div>
+                 
+                 {/* Purchase Checkmark Button */}
+                 {view === 'buy' && !hasMismatch && (
+                   <button 
+                     onClick={() => onPurchaseItem(item)}
+                     className="text-emerald-600 hover:text-white hover:bg-emerald-500 bg-emerald-50 p-1.5 rounded transition-colors"
+                     title="Mark as bought (adds to pantry)"
+                   >
+                     <Check size={18} />
+                   </button>
+                 )}
+
                  {/* Shopping List specific Trash icon (only for One-off extras) */}
                  {item.isManual && (
                    <button onClick={() => onAddExtra('remove', item)} className="text-slate-400 hover:text-red-500 transition">
