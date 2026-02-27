@@ -10,7 +10,7 @@ import {
 import { 
   Plus, Trash2, ShoppingCart, Calendar, Database, CheckSquare, 
   LogOut, Wifi, Loader2, UserCircle, Minus, X, Tag, Filter, Pencil, 
-  AlertTriangle, RefreshCw
+  AlertTriangle, ShoppingBag
 } from 'lucide-react';
 
 // --- FIREBASE CONFIGURATION ---
@@ -129,7 +129,8 @@ function AuthenticatedApp({ user }) {
   const [schedule, setSchedule] = useState({});
   const [inventory, setInventory] = useState({});
   const [customUnits, setCustomUnits] = useState({});
-  const [extraList, setExtraList] = useState([]);
+  const [staples, setStaples] = useState([]); // New: Recurring weekly needs
+  const [extraList, setExtraList] = useState([]); // One-off manual adds
 
   // --- FIRESTORE SYNC ENGINE ---
   useEffect(() => {
@@ -141,6 +142,7 @@ function AuthenticatedApp({ user }) {
         setRecipes(data.recipes || []);
         setSchedule(data.schedule || {});
         setCustomUnits(data.customUnits || {});
+        setStaples(data.staples || []);
         setExtraList(data.extraList || []);
         
         let loadedInv = data.inventory || {};
@@ -156,6 +158,7 @@ function AuthenticatedApp({ user }) {
           schedule: {},
           inventory: {},
           customUnits: {},
+          staples: [],
           extraList: []
         });
       }
@@ -185,20 +188,21 @@ function AuthenticatedApp({ user }) {
     const set = new Set();
     recipes.forEach(r => r.ingredients.forEach(i => set.add(i.name)));
     Object.keys(inventory).forEach(k => set.add(k));
+    staples.forEach(i => set.add(i.name));
     extraList.forEach(i => set.add(i.name));
     return Array.from(set).sort();
-  }, [recipes, inventory, extraList]);
+  }, [recipes, inventory, staples, extraList]);
 
   const { totalRequirements, toBuyList } = useMemo(() => {
     const totals = {};
     
+    // 1. Aggregate Schedule/Recipe Needs
     Object.values(schedule).forEach(recipeId => {
       if (!recipeId) return;
       const recipe = recipes.find(r => r.id === recipeId);
       if (!recipe) return;
       
       recipe.ingredients.forEach(ing => {
-        // NOTE: We use key based on Name + Unit to separate disparate measurements
         const key = `${ing.name.toLowerCase()}-${ing.unit.toLowerCase()}`;
         if (!totals[key]) {
           totals[key] = { 
@@ -214,9 +218,26 @@ function AuthenticatedApp({ user }) {
       });
     });
 
+    // 2. Aggregate Weekly Staples
+    staples.forEach(staple => {
+      const key = `${staple.name.toLowerCase()}-${staple.unit.toLowerCase()}`;
+      if (!totals[key]) {
+        totals[key] = { 
+          ...staple, 
+          qty: 0, 
+          rawName: staple.name,
+          usedIn: new Set(),
+          isManual: false 
+        };
+      }
+      totals[key].qty += parseFloat(staple.qty);
+      totals[key].usedIn.add('Weekly Staple');
+    });
+
     const totalReqs = Object.values(totals)
       .map(item => ({ ...item, usedIn: Array.from(item.usedIn) }));
 
+    // Calculate Need vs Inventory Stock
     const derivedBuyList = totalReqs.map(req => {
       const stockQty = inventory[req.rawName] || 0;
       const needQty = req.qty;
@@ -224,6 +245,7 @@ function AuthenticatedApp({ user }) {
       return { ...req, buyQty, stockQty };
     }).filter(item => item.buyQty > 0);
 
+    // Merge One-off Extras
     const finalBuyList = [
       ...derivedBuyList,
       ...extraList.map(item => ({ 
@@ -231,7 +253,7 @@ function AuthenticatedApp({ user }) {
         rawName: item.name, 
         buyQty: item.qty, 
         stockQty: 0, 
-        usedIn: ['Manual Add'],
+        usedIn: ['One-off Add'],
         isManual: true 
       }))
     ].sort((a, b) => a.rawName.localeCompare(b.rawName));
@@ -242,21 +264,26 @@ function AuthenticatedApp({ user }) {
         ...item, 
         rawName: item.name, 
         stockQty: 0, 
-        usedIn: ['Manual Add'],
+        usedIn: ['One-off Add'],
         isManual: true 
       }))
     ].sort((a, b) => a.rawName.localeCompare(b.rawName));
 
     return { totalRequirements: finalTotalList, toBuyList: finalBuyList };
-  }, [schedule, recipes, inventory, extraList]);
+  }, [schedule, recipes, inventory, staples, extraList]);
 
   // --- HANDLERS ---
   const handleInventory = (item, value, isAbsolute = false, unit = null) => {
     const currentQty = inventory[item] || 0;
     let newQty = isAbsolute ? Math.max(0, value) : Math.max(0, currentQty + value);
     const newInv = { ...inventory };
-    if (newQty > 0) newInv[item] = newQty;
-    else delete newInv[item];
+    
+    // Explicit Delete Action ensures key is removed completely
+    if (newQty > 0) {
+      newInv[item] = newQty;
+    } else {
+      delete newInv[item];
+    }
     
     setInventory(newInv);
     pushUpdate('inventory', newInv);
@@ -268,10 +295,21 @@ function AuthenticatedApp({ user }) {
     }
   };
 
+  const handleStapleList = (action, item) => {
+    let newStaples = [...staples];
+    if (action === 'add') {
+      newStaples.push({ ...item, id: Date.now().toString() });
+    } else if (action === 'remove') {
+      newStaples = newStaples.filter(i => i.id !== item.id);
+    }
+    setStaples(newStaples);
+    pushUpdate('staples', newStaples);
+  };
+
   const handleExtraList = (action, item) => {
     let newExtras = [...extraList];
     if (action === 'add') {
-      newExtras.push({ ...item, id: Date.now() });
+      newExtras.push({ ...item, id: Date.now().toString() });
     } else if (action === 'remove') {
       newExtras = newExtras.filter(i => i.id !== item.id);
     }
@@ -324,18 +362,19 @@ function AuthenticatedApp({ user }) {
             </div>
           </div>
           
-          <div className="flex gap-2">
+          <div className="flex gap-2 overflow-x-auto scrollbar-hide w-full md:w-auto">
              <nav className="flex gap-1 bg-slate-800 p-1 rounded-lg">
               {[
                 { id: 'recipes', icon: Database, label: 'Recipes' },
                 { id: 'planner', icon: Calendar, label: 'Plan' },
+                { id: 'staples', icon: ShoppingBag, label: 'Staples' },
                 { id: 'inventory', icon: CheckSquare, label: 'Stock' },
                 { id: 'shopping', icon: ShoppingCart, label: 'Shop' },
               ].map(tab => (
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-md transition-all text-sm font-medium ${
+                  className={`flex items-center gap-2 px-3 py-2 rounded-md transition-all text-sm font-medium whitespace-nowrap ${
                     activeTab === tab.id 
                       ? 'bg-emerald-500 text-white shadow-md' 
                       : 'text-slate-400 hover:bg-slate-700 hover:text-white'
@@ -356,7 +395,8 @@ function AuthenticatedApp({ user }) {
       <main className="max-w-6xl mx-auto p-4 md:p-6">
         {activeTab === 'recipes' && <RecipeManager recipes={recipes} onAdd={handleAddRecipe} onUpdate={handleUpdateRecipe} onDelete={handleDeleteRecipe} />}
         {activeTab === 'planner' && <WeeklyPlanner days={DAYS} types={MEAL_TYPES} recipes={recipes} schedule={schedule} onUpdate={handleSchedule} />}
-        {activeTab === 'inventory' && <InventoryManager allIngredients={recipes} inventory={inventory} customUnits={customUnits} onUpdate={handleInventory} />}
+        {activeTab === 'staples' && <StaplesManager staples={staples} onUpdateStaple={handleStapleList} />}
+        {activeTab === 'inventory' && <InventoryManager allIngredients={recipes} inventory={inventory} customUnits={customUnits} staples={staples} onUpdate={handleInventory} />}
         {activeTab === 'shopping' && <ShoppingListView total={totalRequirements} buyList={toBuyList} inventoryUnits={customUnits} onAddExtra={handleExtraList} onUpdateInventory={handleInventory} />}
       </main>
     </div>
@@ -584,11 +624,10 @@ function RecipeForm({ onSave, onCancel, knownIngredients, existingTags, initialD
 }
 
 function WeeklyPlanner({ days, types, recipes, schedule, onUpdate }) {
-  const weeks = [1, 2];
-
+  // REDUCED TO 1 WEEK
   return (
     <div className="space-y-6">
-      <h2 className="text-2xl font-bold text-slate-800">14-Day Schedule</h2>
+      <h2 className="text-2xl font-bold text-slate-800">Weekly Schedule</h2>
       <div className="overflow-x-auto rounded-xl border border-slate-200 shadow-sm bg-white">
         <table className="w-full text-left border-collapse">
           <thead>
@@ -598,46 +637,37 @@ function WeeklyPlanner({ days, types, recipes, schedule, onUpdate }) {
             </tr>
           </thead>
           <tbody>
-            {weeks.map(weekNum => (
-              <React.Fragment key={weekNum}>
-                <tr className="bg-emerald-50">
-                  <td colSpan={types.length + 1} className="p-2 px-4 font-bold text-emerald-800 text-xs uppercase tracking-widest border-y border-emerald-100">
-                    Week {weekNum}
-                  </td>
-                </tr>
-                {days.map(day => (
-                  <tr key={`${weekNum}-${day}`} className="border-b last:border-0 hover:bg-slate-50">
-                    <td className="p-4 font-medium text-slate-600">
-                      {day}
+            {days.map(day => (
+              <tr key={day} className="border-b last:border-0 hover:bg-slate-50">
+                <td className="p-4 font-medium text-slate-600">
+                  {day}
+                </td>
+                {types.map(type => {
+                  const key = `${day}-${type}`;
+                  const selectedValue = schedule[key] || '';
+                  
+                  return (
+                    <td key={key} className="p-3">
+                      <select 
+                        className={`w-full p-2 border rounded-lg text-sm transition-all
+                          ${selectedValue 
+                            ? 'bg-white border-emerald-300 font-bold text-slate-900 shadow-sm' 
+                            : 'bg-slate-50 border-slate-200 text-slate-400 font-normal'}
+                        `}
+                        value={selectedValue}
+                        onChange={(e) => onUpdate(day, type, e.target.value)}
+                      >
+                        <option value="" className="font-normal text-slate-400">— Select —</option>
+                        {recipes.map(r => (
+                          <option key={r.id} value={r.id} className="font-bold text-slate-900">
+                            {r.name}
+                          </option>
+                        ))}
+                      </select>
                     </td>
-                    {types.map(type => {
-                      const key = weekNum === 1 ? `${day}-${type}` : `W2-${day}-${type}`;
-                      const selectedValue = schedule[key] || '';
-                      
-                      return (
-                        <td key={key} className="p-3">
-                          <select 
-                            className={`w-full p-2 border rounded-lg text-sm transition-all
-                              ${selectedValue 
-                                ? 'bg-white border-emerald-300 font-bold text-slate-900 shadow-sm' 
-                                : 'bg-slate-50 border-slate-200 text-slate-400 font-normal'}
-                            `}
-                            value={selectedValue}
-                            onChange={(e) => onUpdate(weekNum === 1 ? day : `W2-${day}`, type, e.target.value)}
-                          >
-                            <option value="" className="font-normal text-slate-400">— Select —</option>
-                            {recipes.map(r => (
-                              <option key={r.id} value={r.id} className="font-bold text-slate-900">
-                                {r.name}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </React.Fragment>
+                  );
+                })}
+              </tr>
             ))}
           </tbody>
         </table>
@@ -646,7 +676,81 @@ function WeeklyPlanner({ days, types, recipes, schedule, onUpdate }) {
   );
 }
 
-function InventoryManager({ allIngredients, inventory, customUnits, onUpdate }) {
+function StaplesManager({ staples, onUpdateStaple }) {
+  const [isAdding, setIsAdding] = useState(false);
+  const [name, setName] = useState('');
+  const [qty, setQty] = useState('');
+  const [unit, setUnit] = useState('');
+
+  const handleAdd = () => {
+    if (!name) return;
+    onUpdateStaple('add', { name, qty: qty || 1, unit });
+    setName(''); setQty(''); setUnit(''); setIsAdding(false);
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto space-y-6">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-800">Weekly Staples</h2>
+          <p className="text-slate-500 text-sm">Groceries you need to buy every single week.</p>
+        </div>
+        <button 
+          onClick={() => setIsAdding(!isAdding)}
+          className="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 transition shadow-sm flex items-center gap-2 font-medium"
+        >
+          {isAdding ? <><X size={18} /> Cancel</> : <><Plus size={18} /> Add Staple</>}
+        </button>
+      </div>
+
+      {isAdding && (
+        <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 flex flex-col sm:flex-row gap-3 items-end">
+          <div className="flex-1 w-full">
+            <label className="block text-xs font-semibold text-emerald-800 mb-1">STAPLE ITEM</label>
+            <input 
+              className="w-full p-2 border border-emerald-200 rounded-md text-sm" 
+              placeholder="e.g. Toilet Paper" 
+              value={name} 
+              list="all-ingredients"
+              onChange={e => setName(e.target.value)} 
+            />
+          </div>
+          <div className="w-20">
+            <label className="block text-xs font-semibold text-emerald-800 mb-1">QTY</label>
+            <input type="number" className="w-full p-2 border border-emerald-200 rounded-md text-sm" placeholder="1" value={qty} onChange={e => setQty(e.target.value)} />
+          </div>
+          <div className="w-24">
+            <label className="block text-xs font-semibold text-emerald-800 mb-1">UNIT</label>
+            <input className="w-full p-2 border border-emerald-200 rounded-md text-sm" placeholder="rolls" value={unit} onChange={e => setUnit(e.target.value)} />
+          </div>
+          <button onClick={handleAdd} className="w-full sm:w-auto bg-emerald-600 text-white px-6 py-2 rounded-md text-sm font-bold hover:bg-emerald-700">Save</button>
+        </div>
+      )}
+
+      <div className="bg-white rounded-xl shadow-sm border p-4">
+        {staples.length === 0 ? <div className="text-center p-8 text-slate-400">No staples added yet.</div> : (
+          <div className="divide-y">
+            {staples.map(item => (
+              <div key={item.id} className="flex items-center justify-between p-3">
+                <span className="font-medium text-slate-800">{item.name}</span>
+                <div className="flex items-center gap-4">
+                  <div className="font-mono bg-slate-100 px-3 py-1 rounded text-sm text-slate-700">
+                    {item.qty} <span className="text-slate-500">{item.unit}</span>
+                  </div>
+                  <button onClick={() => onUpdateStaple('remove', item)} className="text-slate-400 hover:text-red-500 transition">
+                    <Trash2 size={18} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function InventoryManager({ allIngredients, inventory, customUnits, staples, onUpdate }) {
   const [view, setView] = useState('all');
   const [isAdding, setIsAdding] = useState(false);
   const [newItemName, setNewItemName] = useState('');
@@ -658,8 +762,11 @@ function InventoryManager({ allIngredients, inventory, customUnits, onUpdate }) 
     allIngredients.forEach(r => r.ingredients.forEach(i => {
       if (!map[i.name]) map[i.name] = i.unit;
     }));
+    staples.forEach(s => {
+      if (!map[s.name]) map[s.name] = s.unit;
+    });
     return map;
-  }, [allIngredients, customUnits]);
+  }, [allIngredients, customUnits, staples]);
   
   const displayedList = useMemo(() => {
     const fromRecipes = Object.keys(ingredientMeta);
@@ -760,27 +867,37 @@ function InventoryManager({ allIngredients, inventory, customUnits, onUpdate }) 
                 <div key={item} className={`flex items-center justify-between p-3 ${qty > 0 ? 'bg-emerald-50/50' : ''}`}>
                   <span className={`font-medium ${qty > 0 ? 'text-emerald-900' : 'text-slate-600'}`}>{item}</span>
                   
-                  <div className="flex items-center gap-2 bg-white border rounded-lg p-1 shadow-sm">
-                    <button 
-                      onClick={() => onUpdate(item, -1)}
-                      className="p-1 hover:bg-slate-100 rounded text-slate-500"
-                    >
-                      <Minus size={16} />
-                    </button>
-                    <div className="flex items-center">
-                      <input 
-                        type="number"
-                        className="w-16 text-center font-mono text-sm font-bold text-slate-700 outline-none bg-transparent"
-                        value={qty}
-                        onChange={(e) => onUpdate(item, parseFloat(e.target.value) || 0, true)} 
-                      />
-                      <span className="text-xs font-normal text-slate-400 pr-2 min-w-[20px]">{unit}</span>
+                  <div className="flex items-center gap-2">
+                    <div className="flex items-center bg-white border rounded-lg p-1 shadow-sm">
+                      <button 
+                        onClick={() => onUpdate(item, -1)}
+                        className="p-1 hover:bg-slate-100 rounded text-slate-500"
+                      >
+                        <Minus size={16} />
+                      </button>
+                      <div className="flex items-center">
+                        <input 
+                          type="number"
+                          className="w-16 text-center font-mono text-sm font-bold text-slate-700 outline-none bg-transparent"
+                          value={qty}
+                          onChange={(e) => onUpdate(item, parseFloat(e.target.value) || 0, true)} 
+                        />
+                        <span className="text-xs font-normal text-slate-400 pr-2 min-w-[20px]">{unit}</span>
+                      </div>
+                      <button 
+                        onClick={() => onUpdate(item, 1)}
+                        className="p-1 hover:bg-slate-100 rounded text-emerald-600"
+                      >
+                        <Plus size={16} />
+                      </button>
                     </div>
+                    {/* Explicit Delete Icon for Inventory */}
                     <button 
-                      onClick={() => onUpdate(item, 1)}
-                      className="p-1 hover:bg-slate-100 rounded text-emerald-600"
+                      onClick={() => onUpdate(item, 0, true)} // 0 qty removes the key completely
+                      className="text-slate-400 hover:text-red-500 p-2"
+                      title="Delete entirely from inventory"
                     >
-                      <Plus size={16} />
+                      <Trash2 size={16} />
                     </button>
                   </div>
                 </div>
@@ -800,7 +917,6 @@ function ShoppingListView({ total, buyList, inventoryUnits, onAddExtra, onUpdate
   const [extraQty, setExtraQty] = useState('');
   const [extraUnit, setExtraUnit] = useState('');
   
-  // Resolution State: { "Item Name": { newQty: 5, newUnit: "ml" } }
   const [resolving, setResolving] = useState({});
 
   const items = view === 'buy' ? buyList : total;
@@ -820,10 +936,8 @@ function ShoppingListView({ total, buyList, inventoryUnits, onAddExtra, onUpdate
 
   const confirmResolve = (itemName) => {
     const { qty, unit } = resolving[itemName];
-    // Update inventory to the new Quantity AND the new Unit (Recipe Unit)
     onUpdateInventory(itemName, qty, true, unit);
     
-    // Clear resolution state
     const newResolving = { ...resolving };
     delete newResolving[itemName];
     setResolving(newResolving);
@@ -832,13 +946,16 @@ function ShoppingListView({ total, buyList, inventoryUnits, onAddExtra, onUpdate
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-        <h2 className="text-2xl font-bold text-slate-800">Shopping List</h2>
+        <div>
+          <h2 className="text-2xl font-bold text-slate-800">Shopping List</h2>
+          <p className="text-slate-500 text-sm">Aggregates Recipes + Staples, subtracts Inventory.</p>
+        </div>
         <div className="flex gap-2">
           <div className="flex bg-slate-200 p-1 rounded-lg">
             <button onClick={() => setView('buy')} className={`px-4 py-1.5 rounded-md text-sm ${view === 'buy' ? 'bg-white shadow' : ''}`}>To Buy ({buyList.length})</button>
             <button onClick={() => setView('all')} className={`px-4 py-1.5 rounded-md text-sm ${view === 'all' ? 'bg-white shadow' : ''}`}>Total ({total.length})</button>
           </div>
-          <button onClick={() => setIsAdding(!isAdding)} className="bg-emerald-600 text-white p-2 rounded-lg hover:bg-emerald-700 shadow-sm" title="Add extra item">
+          <button onClick={() => setIsAdding(!isAdding)} className="bg-emerald-600 text-white p-2 rounded-lg hover:bg-emerald-700 shadow-sm" title="Add one-off item">
             {isAdding ? <X size={20} /> : <Plus size={20} />}
           </button>
         </div>
@@ -847,7 +964,7 @@ function ShoppingListView({ total, buyList, inventoryUnits, onAddExtra, onUpdate
       {isAdding && (
         <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 flex flex-col sm:flex-row gap-3 items-end">
           <div className="flex-1 w-full">
-            <label className="block text-xs font-semibold text-emerald-800 mb-1">EXTRA ITEM</label>
+            <label className="block text-xs font-semibold text-emerald-800 mb-1">ONE-OFF EXTRA ITEM</label>
             <input 
               className="w-full p-2 border border-emerald-200 rounded-md text-sm" 
               placeholder="e.g. Paper Towels" 
@@ -870,7 +987,6 @@ function ShoppingListView({ total, buyList, inventoryUnits, onAddExtra, onUpdate
 
       <div className="bg-white rounded-xl shadow-lg border overflow-hidden divide-y">
         {items.length === 0 ? <div className="p-12 text-center text-slate-400">Nothing here!</div> : items.map((item, idx) => {
-          // Detect Mismatch: Inventory Unit exists AND is different from Recipe Unit
           const stockUnit = inventoryUnits[item.rawName];
           const hasMismatch = stockUnit && stockUnit !== item.unit && item.stockQty > 0;
           const isResolving = resolving[item.rawName];
@@ -886,13 +1002,12 @@ function ShoppingListView({ total, buyList, inventoryUnits, onAddExtra, onUpdate
                   </div>
                   <div className="flex flex-wrap gap-1 mt-1">
                     {item.usedIn.map(r => (
-                      <span key={r} className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
+                      <span key={r} className={`text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded ${r === 'Weekly Staple' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-500'}`}>
                         {r}
                       </span>
                     ))}
                   </div>
                   
-                  {/* UNIT MISMATCH WARNING */}
                   {hasMismatch && !isResolving && (
                     <div className="mt-2 flex items-center gap-2 text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded border border-amber-100">
                       <AlertTriangle size={12} />
@@ -906,7 +1021,6 @@ function ShoppingListView({ total, buyList, inventoryUnits, onAddExtra, onUpdate
                     </div>
                   )}
 
-                  {/* RESOLUTION UI */}
                   {isResolving && (
                     <div className="mt-2 p-2 bg-slate-50 border rounded-md flex items-center gap-2">
                       <span className="text-xs text-slate-500">Convert {stockUnit} to {item.unit}:</span>
@@ -932,6 +1046,7 @@ function ShoppingListView({ total, buyList, inventoryUnits, onAddExtra, onUpdate
                  <div className="font-mono bg-slate-100 px-3 py-1 rounded text-sm min-w-[80px] text-center">
                    {view === 'buy' ? item.buyQty : item.qty} {item.unit}
                  </div>
+                 {/* Shopping List specific Trash icon (only for One-off extras) */}
                  {item.isManual && (
                    <button onClick={() => onAddExtra('remove', item)} className="text-slate-400 hover:text-red-500 transition">
                      <Trash2 size={16} />
